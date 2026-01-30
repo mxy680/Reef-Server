@@ -37,6 +37,59 @@ MOCK_RESPONSES = {
             "answer": "6x + 2"
         }),
     },
+    # AI endpoint responses
+    "feedback": {
+        "default": "I can see your handwritten work. Your approach shows good understanding of the concept. Here are some suggestions:\n\n1. Your notation is clear and well-organized\n2. The calculation in step 2 is correct\n3. Consider double-checking your final answer by substituting back into the original equation\n\nOverall, great effort! Keep practicing to build confidence.",
+        "math": "Looking at your mathematical work:\n\n**Detected content:** You've written the quadratic formula and are solving for x.\n\n**Feedback:**\n- Your setup is correct: $x = \\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}$\n- Watch the sign in the discriminant calculation\n- Your final answers look good!\n\nExcellent work on showing all your steps.",
+        "error": "I notice an error in your work. In step 3, when you multiplied both sides by 2, you forgot to distribute to the second term. Let me help:\n\nOriginal: $\\frac{x+3}{2} = 5$\nCorrect: $x + 3 = 10$\n\nFrom here, you would get $x = 7$, not $x = 4$.",
+    },
+    "quiz": {
+        "default": json.dumps({
+            "questions": [
+                {
+                    "id": "q1",
+                    "type": "multiple_choice",
+                    "question": "What is the derivative of x^2?",
+                    "options": [
+                        {"label": "A", "text": "x"},
+                        {"label": "B", "text": "2x"},
+                        {"label": "C", "text": "2"},
+                        {"label": "D", "text": "x^2"}
+                    ],
+                    "correct_answer": "B",
+                    "explanation": "Using the power rule, d/dx(x^n) = nx^(n-1). For x^2, this gives 2x^1 = 2x.",
+                    "source_chunk_ids": ["chunk_1"]
+                },
+                {
+                    "id": "q2",
+                    "type": "true_false",
+                    "question": "The integral of a constant is always zero.",
+                    "correct_answer": "False",
+                    "explanation": "The integral of a constant c is cx + C, where C is the constant of integration. It's only zero when c = 0.",
+                    "source_chunk_ids": ["chunk_2"]
+                },
+                {
+                    "id": "q3",
+                    "type": "multiple_choice",
+                    "question": "Which of the following is the chain rule formula?",
+                    "options": [
+                        {"label": "A", "text": "d/dx[f(g(x))] = f'(x)g'(x)"},
+                        {"label": "B", "text": "d/dx[f(g(x))] = f'(g(x)) * g'(x)"},
+                        {"label": "C", "text": "d/dx[f(g(x))] = f(g'(x))"},
+                        {"label": "D", "text": "d/dx[f(g(x))] = f'(g(x)) + g'(x)"}
+                    ],
+                    "correct_answer": "B",
+                    "explanation": "The chain rule states that the derivative of a composite function f(g(x)) is the derivative of the outer function evaluated at the inner function, multiplied by the derivative of the inner function.",
+                    "source_chunk_ids": ["chunk_1", "chunk_3"]
+                }
+            ]
+        }),
+    },
+    "chat": {
+        "default": "Based on the course materials, I can help you understand this concept. The key idea is that derivatives measure the rate of change of a function. When you see a problem asking for the derivative, you're essentially finding how fast the function's output changes as the input changes.\n\nIs there a specific part of this concept you'd like me to explain further?",
+        "explain": "Let me explain this step by step:\n\n1. **First**, identify the type of function you're working with\n2. **Then**, choose the appropriate differentiation rule\n3. **Finally**, apply the rule and simplify\n\nFrom your course notes on Chapter 3, the power rule is: $\\frac{d}{dx}x^n = nx^{n-1}$\n\nWould you like me to walk through a specific example?",
+        "hint": "I see you're working on integration by parts. Here's a hint without giving away the full answer:\n\nRemember the formula: $\\int u \\, dv = uv - \\int v \\, du$\n\nFor this problem, try letting $u = x$ and $dv = e^x dx$. What does that give you for $du$ and $v$?",
+    },
 }
 
 # Scenario-specific responses (used with X-Mock-Scenario header)
