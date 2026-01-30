@@ -22,7 +22,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from lib.gemini_proxy import GeminiProxy
-from lib.mock_responses import get_mock_response
+from lib.mock_responses import get_mock_response, get_mock_embedding
 from lib.simulator import simulate_error, simulate_delay
 from lib.logger import RequestLogger
 from lib.providers import ProviderRouter, GenerationConfig
@@ -30,7 +30,9 @@ from lib.models import (
     FeedbackRequest, FeedbackResponse,
     QuizRequest, QuizResponse, QuizQuestion, QuizOption, QUIZ_RESPONSE_SCHEMA,
     ChatRequest, ChatResponse, SourceReference,
+    EmbedRequest, EmbedResponse,
 )
+from lib.embedding import get_embedding_service
 from lib.prompt_templates import (
     build_feedback_prompt,
     build_quiz_prompt,
@@ -550,6 +552,79 @@ async def ai_chat(
             sources=sources,
             model=result.model,
             provider=result.provider,
+            mode="prod",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        request_logger.log_response(log_id, success=False, error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/ai/embed", response_model=EmbedResponse)
+async def ai_embed(
+    request_body: EmbedRequest,
+    request: Request,
+    mode: str = Query(default="prod", pattern="^(mock|prod)$"),
+    delay: Optional[int] = Query(default=None, ge=0, le=30000),
+    error: Optional[str] = Query(default=None, pattern="^(rate_limit|timeout|500)$"),
+):
+    """
+    Generate text embeddings using MiniLM-L6-v2.
+
+    Accepts a single text string or a list of texts. Returns 384-dimensional
+    normalized vectors suitable for semantic search.
+
+    Query Parameters:
+    - mode: "mock" for testing, "prod" for real embeddings
+    - delay: Add latency in milliseconds (0-30000)
+    - error: Simulate error ("rate_limit", "timeout", "500")
+    """
+    # Normalize input to list
+    texts = request_body.texts if isinstance(request_body.texts, list) else [request_body.texts]
+    text_count = len(texts)
+
+    log_id = request_logger.log_request(
+        endpoint="/ai/embed",
+        mode=mode,
+        prompt_preview=f"{text_count} text(s)",
+    )
+
+    try:
+        if delay:
+            await simulate_delay(delay)
+        if error:
+            simulate_error(error)
+
+        # Validate input
+        if text_count == 0:
+            raise HTTPException(status_code=422, detail="texts cannot be empty")
+        if text_count > 100:
+            raise HTTPException(status_code=422, detail="Maximum 100 texts per request")
+
+        # Mock mode
+        if mode == "mock":
+            embeddings = get_mock_embedding(count=text_count, dimensions=384)
+            request_logger.log_response(log_id, success=True, mode="mock")
+            return EmbedResponse(
+                embeddings=embeddings,
+                model="all-MiniLM-L6-v2",
+                dimensions=384,
+                count=text_count,
+                mode="mock",
+            )
+
+        # Production mode
+        embedding_service = get_embedding_service()
+        embeddings = embedding_service.embed(texts, normalize=request_body.normalize)
+
+        request_logger.log_response(log_id, success=True, mode="prod")
+        return EmbedResponse(
+            embeddings=embeddings,
+            model=embedding_service.model_name,
+            dimensions=embedding_service.dimensions,
+            count=text_count,
             mode="prod",
         )
 

@@ -178,3 +178,99 @@ class TestLogsEndpoint:
         assert response.status_code == 200
         data = response.json()
         assert len(data["logs"]) <= 5
+
+
+class TestEmbedEndpoint:
+    """Tests for /ai/embed endpoint."""
+
+    def test_embed_single_text_mock(self, client):
+        """Embed single text in mock mode."""
+        response = client.post(
+            "/ai/embed?mode=mock",
+            json={"texts": "Hello world"}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "embeddings" in data
+        assert len(data["embeddings"]) == 1
+        assert len(data["embeddings"][0]) == 384
+        assert data["model"] == "all-MiniLM-L6-v2"
+        assert data["dimensions"] == 384
+        assert data["count"] == 1
+        assert data["mode"] == "mock"
+
+    def test_embed_batch_mock(self, client):
+        """Embed multiple texts in mock mode."""
+        response = client.post(
+            "/ai/embed?mode=mock",
+            json={"texts": ["Hello world", "Test embedding", "Another text"]}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["embeddings"]) == 3
+        assert data["count"] == 3
+        # Each embedding should be 384 dimensions
+        for emb in data["embeddings"]:
+            assert len(emb) == 384
+
+    def test_embed_normalized_mock(self, client):
+        """Embeddings should be normalized (L2 norm ~1)."""
+        response = client.post(
+            "/ai/embed?mode=mock",
+            json={"texts": "Test normalization", "normalize": True}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        embedding = data["embeddings"][0]
+        # Calculate L2 norm
+        norm = sum(x * x for x in embedding) ** 0.5
+        # Should be approximately 1.0
+        assert 0.99 < norm < 1.01
+
+    def test_embed_requires_texts(self, client):
+        """Embed should require texts field."""
+        response = client.post(
+            "/ai/embed?mode=mock",
+            json={}
+        )
+        assert response.status_code == 422
+
+    def test_embed_empty_list_fails(self, client):
+        """Embed should reject empty texts list."""
+        response = client.post(
+            "/ai/embed?mode=mock",
+            json={"texts": []}
+        )
+        assert response.status_code == 422
+
+    def test_embed_rate_limit_error(self, client):
+        """Embed rate limit simulation should return 429."""
+        response = client.post(
+            "/ai/embed?mode=mock&error=rate_limit",
+            json={"texts": "Test"}
+        )
+        assert response.status_code == 429
+
+    def test_embed_timeout_error(self, client):
+        """Embed timeout simulation should return 504."""
+        response = client.post(
+            "/ai/embed?mode=mock&error=timeout",
+            json={"texts": "Test"}
+        )
+        assert response.status_code == 504
+
+    def test_embed_server_error(self, client):
+        """Embed server error simulation should return 500."""
+        response = client.post(
+            "/ai/embed?mode=mock&error=500",
+            json={"texts": "Test"}
+        )
+        assert response.status_code == 500
+
+    def test_embed_invalid_mode(self, client):
+        """Embed with invalid mode should fail."""
+        response = client.post(
+            "/ai/embed?mode=invalid",
+            json={"texts": "Test"}
+        )
+        assert response.status_code == 422
