@@ -38,13 +38,18 @@ For each question:
 1. Identify the question number (e.g., "1", "2a", "Problem 3")
 2. Keep sub-questions (a, b, c, i, ii, etc.) together with their parent question
 3. Convert the content to clean LaTeX format
-4. Include any images using \\includegraphics{{image_name}}
+4. FORMAT STRUCTURE - questions must follow this order:
+   - Question number and directions/intro text FIRST
+   - Then ALL images (centered, smartly sized): \\begin{{center}}\\includegraphics[width=0.5\\textwidth,height=0.3\\textheight,keepaspectratio]{{image_name}}\\end{{center}}
+   - For multiple images, place them side-by-side when possible using minipage: \\begin{{center}}\\begin{{minipage}}{{0.45\\textwidth}}\\centering\\includegraphics[width=\\textwidth,height=0.25\\textheight,keepaspectratio]{{img1}}\\end{{minipage}}\\hfill\\begin{{minipage}}{{0.45\\textwidth}}\\centering\\includegraphics[width=\\textwidth,height=0.25\\textheight,keepaspectratio]{{img2}}\\end{{minipage}}\\end{{center}}
+   - Then sub-questions (a), (b), (c) etc.
+   - NO whitespace between directions/images and sub-question (a)
 5. Format tables using the booktabs package (\\toprule, \\midrule, \\bottomrule)
 6. Format math expressions using proper LaTeX math mode ($ for inline, $$ or \\[ \\] for display)
-7. CRITICAL: After EVERY sub-question (a), (b), (c), etc., add \\vspace{{5cm}} to provide space for student answers - INCLUDING the last sub-question
+7. CRITICAL: Add \\vspace{{5cm}} AFTER each sub-question for answer space - but NOT before sub-question (a)
 8. For sub-questions, use labels like (a), (b), (c) - NOT numbered lists like 1., 2., 3. Use \\textbf{{(a)}}, \\textbf{{(b)}}, etc. for sub-question labels
 9. For fill-in-the-blank lines, use \\underline{{\\hspace{{3cm}}}} instead of long underscores to prevent overflow
-10. BEFORE each sub-question, add \\needspace{{6cm}} to prevent page breaks splitting a sub-question across pages
+10. BEFORE each sub-question (except the first), add \\needspace{{6cm}} to prevent page breaks splitting a sub-question across pages
 
 Return a JSON array with objects containing:
 - "question_number": string (the question identifier)
@@ -118,8 +123,14 @@ class QuestionExtractor:
 
         for img_name, img_data in images.items():
             img_path = images_dir / img_name
-            with open(img_path, "wb") as f:
-                f.write(img_data)
+            # Handle both PIL Image objects and raw bytes
+            if hasattr(img_data, 'save'):
+                # It's a PIL Image - save it directly
+                img_data.save(img_path)
+            else:
+                # It's raw bytes
+                with open(img_path, "wb") as f:
+                    f.write(img_data)
             image_paths.append(str(img_path))
 
         return markdown_text, image_paths

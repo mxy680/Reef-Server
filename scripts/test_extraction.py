@@ -19,11 +19,17 @@ from lib.latex_compiler import LaTeXCompiler
 
 
 async def extract_and_save(pdf_path: str):
-    """Extract questions from PDF and save to dated subdirectory."""
+    """Extract questions from PDF and save to subdirectory named after the PDF."""
 
-    # Create output directory with timestamp
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    output_dir = Path("documents/extractions") / timestamp
+    # Create output directory named after the PDF (without extension)
+    pdf_name = Path(pdf_path).stem
+    output_dir = Path("documents/extractions") / pdf_name
+
+    # Remove existing directory if it exists (to replace previous results)
+    if output_dir.exists():
+        import shutil
+        shutil.rmtree(output_dir)
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Output directory: {output_dir}")

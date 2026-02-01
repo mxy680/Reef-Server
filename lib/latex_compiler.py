@@ -47,6 +47,17 @@ LATEX_TEMPLATE = r"""
 % Prevent page breaks in middle of sub-questions
 \usepackage{{needspace}}
 
+% Algorithm/pseudocode support
+\usepackage{{algorithm}}
+\usepackage{{algorithmic}}
+
+% Code listings
+\usepackage{{listings}}
+\lstset{{basicstyle=\ttfamily\small, columns=fullflexible, breaklines=true}}
+
+% Captions outside floats
+\usepackage{{caption}}
+
 % Font improvements
 \usepackage{{lmodern}}
 \usepackage[T1]{{fontenc}}
