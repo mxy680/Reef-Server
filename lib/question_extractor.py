@@ -71,7 +71,7 @@ class QuestionExtractor:
             raise ValueError("GEMINI_API_KEY environment variable not set")
 
         genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel("gemini-1.5-flash")
+        self.model = genai.GenerativeModel("gemini-2.5-flash-preview-04-17")
 
     def extract_from_pdf(self, pdf_path: str, output_dir: str) -> tuple[str, list[str]]:
         """
