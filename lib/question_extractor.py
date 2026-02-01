@@ -61,6 +61,8 @@ IMPORTANT:
 - Add \\vspace{{5cm}} after EVERY sub-question for answer space
 - Remove any stray punctuation (like lone periods or commas on their own lines) that are OCR artifacts
 - Clean up any formatting issues from the OCR extraction
+- NEVER rephrase, reword, or restructure the question text - preserve the EXACT original wording
+- Only add formatting (whitespace, LaTeX math mode) - do not change the content
 
 Markdown content:
 {markdown_content}
