@@ -42,6 +42,7 @@ For each question:
 5. Format tables using the booktabs package (\\toprule, \\midrule, \\bottomrule)
 6. Format math expressions using proper LaTeX math mode ($ for inline, $$ or \\[ \\] for display)
 7. CRITICAL: After EACH sub-question (a), (b), (c), etc., add \\vspace{{5cm}} to provide space for student answers
+8. For sub-questions, use labels like (a), (b), (c) - NOT numbered lists like 1., 2., 3. Use \\textbf{{(a)}}, \\textbf{{(b)}}, etc. for sub-question labels
 
 Return a JSON array with objects containing:
 - "question_number": string (the question identifier)
@@ -56,6 +57,8 @@ IMPORTANT:
 - Preserve all mathematical notation accurately
 - Keep multi-part questions together
 - Add \\vspace{{5cm}} after EVERY sub-question for answer space
+- Remove any stray punctuation (like lone periods or commas on their own lines) that are OCR artifacts
+- Clean up any formatting issues from the OCR extraction
 
 Markdown content:
 {markdown_content}
