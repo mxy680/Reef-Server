@@ -51,7 +51,11 @@ For each question:
    - Then sub-questions (a), (b), (c) etc.
    - NO whitespace between directions/images and sub-question (a)
 5. Format tables using the booktabs package (\\toprule, \\midrule, \\bottomrule)
-6. Format math expressions using proper LaTeX math mode ($ for inline, $$ or \\[ \\] for display)
+6. Format math expressions using proper LaTeX math mode:
+   - Use $ for inline math
+   - Use $$ or \\[ \\] for display math ONLY for standalone equations in the problem statement
+   - CRITICAL: When a sub-question IS an equation (e.g., "(a) T(n) = ..."), keep the equation INLINE with the label using $ $, like: \\textbf{{(a)}} $T(n) = bT(n/a) + \\Theta(n)$
+   - Do NOT put sub-question equations in display math mode - they must stay on the same line as their label
 7. CRITICAL: Add \\vspace{{5cm}} AFTER each sub-question for answer space - but NOT before sub-question (a)
 8. For sub-questions, use labels like (a), (b), (c) - NOT numbered lists like 1., 2., 3. Use \\textbf{{(a)}}, \\textbf{{(b)}}, etc. for sub-question labels
 9. For fill-in-the-blank lines, use \\underline{{\\hspace{{3cm}}}} instead of long underscores to prevent overflow
