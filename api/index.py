@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
+import asyncio
 import os
 
 # Import lib modules
@@ -174,29 +175,38 @@ async def ai_extract_questions(
                 total_count=0
             )
 
-        # Compile each question to PDF
+        # Compile questions to PDF in parallel
+        async def compile_single(eq):
+            """Compile a single question in a thread pool."""
+            return await asyncio.to_thread(
+                compiler.compile_question,
+                order_index=eq.order_index,
+                question_number=eq.question_number,
+                latex_content=eq.latex_content,
+                has_images=eq.has_images,
+                has_tables=eq.has_tables,
+                image_data=eq.image_data if eq.image_data else None
+            )
+
+        # Run all compilations in parallel
+        compiled_results = await asyncio.gather(
+            *[compile_single(eq) for eq in extracted_questions],
+            return_exceptions=True
+        )
+
+        # Filter successful compilations
         compiled_questions = []
-        for eq in extracted_questions:
-            try:
-                compiled = compiler.compile_question(
-                    order_index=eq.order_index,
-                    question_number=eq.question_number,
-                    latex_content=eq.latex_content,
-                    has_images=eq.has_images,
-                    has_tables=eq.has_tables,
-                    image_data=eq.image_data if eq.image_data else None
-                )
-                compiled_questions.append(QuestionData(
-                    order_index=compiled.order_index,
-                    question_number=compiled.question_number,
-                    pdf_base64=compiled.pdf_base64,
-                    has_images=compiled.has_images,
-                    has_tables=compiled.has_tables
-                ))
-            except Exception as compile_error:
-                # Log but continue with other questions
-                print(f"Failed to compile question {eq.question_number}: {compile_error}")
+        for i, result in enumerate(compiled_results):
+            if isinstance(result, Exception):
+                print(f"Failed to compile question {extracted_questions[i].question_number}: {result}")
                 continue
+            compiled_questions.append(QuestionData(
+                order_index=result.order_index,
+                question_number=result.question_number,
+                pdf_base64=result.pdf_base64,
+                has_images=result.has_images,
+                has_tables=result.has_tables
+            ))
 
         return ExtractQuestionsResponse(
             questions=compiled_questions,
