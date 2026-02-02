@@ -32,26 +32,14 @@ _marker_models = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Preload ML models at startup to avoid cold start delays."""
-    global _marker_models
-
-    print("[Startup] Preloading models...")
-
-    # Preload embedding model
-    print("[Startup] Loading embedding model...")
+    """Preload small models at startup. Marker models loaded lazily on first request."""
+    print("[Startup] Preloading embedding model...")
     embedding_service = get_embedding_service()
     embedding_service._load_model()
-
-    # Preload Marker models
-    print("[Startup] Loading Marker models...")
-    from marker.models import create_model_dict
-    _marker_models = create_model_dict()
-
-    print("[Startup] All models loaded!")
+    print("[Startup] Embedding model loaded! Marker models will load on first request.")
 
     yield
 
-    # Cleanup (if needed)
     print("[Shutdown] Cleaning up...")
 
 
