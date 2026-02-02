@@ -40,8 +40,14 @@ For each question:
 3. Convert the content to clean LaTeX format
 4. FORMAT STRUCTURE - questions must follow this order:
    - Question number and directions/intro text FIRST
-   - Then ALL images (centered, smartly sized): \\begin{{center}}\\includegraphics[width=0.5\\textwidth,height=0.3\\textheight,keepaspectratio]{{image_name}}\\end{{center}}
+   - Then ALL images (centered, smartly sized) with captions INSIDE the center block:
+     \\begin{{center}}
+     \\includegraphics[width=0.5\\textwidth,height=0.3\\textheight,keepaspectratio]{{image_name}}
+
+     \\textbf{{Figure X.}} Caption text here
+     \\end{{center}}
    - For multiple images, place them side-by-side when possible using minipage: \\begin{{center}}\\begin{{minipage}}{{0.45\\textwidth}}\\centering\\includegraphics[width=\\textwidth,height=0.25\\textheight,keepaspectratio]{{img1}}\\end{{minipage}}\\hfill\\begin{{minipage}}{{0.45\\textwidth}}\\centering\\includegraphics[width=\\textwidth,height=0.25\\textheight,keepaspectratio]{{img2}}\\end{{minipage}}\\end{{center}}
+   - IMPORTANT: Figure captions must ALWAYS be inside the \\begin{{center}}...\\end{{center}} block, directly under the image
    - Then sub-questions (a), (b), (c) etc.
    - NO whitespace between directions/images and sub-question (a)
 5. Format tables using the booktabs package (\\toprule, \\midrule, \\bottomrule)
