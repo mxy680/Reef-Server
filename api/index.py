@@ -6,6 +6,7 @@ Provides:
 - Mock mode for testing
 """
 
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
@@ -25,10 +26,49 @@ from lib.models import (
 )
 from lib.embedding import get_embedding_service
 
+# Cache for Marker models (loaded once at startup)
+_marker_models = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Preload ML models at startup to avoid cold start delays."""
+    global _marker_models
+
+    print("[Startup] Preloading models...")
+
+    # Preload embedding model
+    print("[Startup] Loading embedding model...")
+    embedding_service = get_embedding_service()
+    embedding_service._load_model()
+
+    # Preload Marker models
+    print("[Startup] Loading Marker models...")
+    from marker.models import create_model_dict
+    _marker_models = create_model_dict()
+
+    print("[Startup] All models loaded!")
+
+    yield
+
+    # Cleanup (if needed)
+    print("[Shutdown] Cleaning up...")
+
+
+def get_marker_models():
+    """Get cached Marker models."""
+    global _marker_models
+    if _marker_models is None:
+        from marker.models import create_model_dict
+        _marker_models = create_model_dict()
+    return _marker_models
+
+
 app = FastAPI(
     title="Reef Server",
     description="Embedding service for Reef iOS app",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # CORS middleware

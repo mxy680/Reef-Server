@@ -101,15 +101,15 @@ class QuestionExtractor:
         """
         try:
             from marker.converters.pdf import PdfConverter
-            from marker.models import create_model_dict
             from marker.output import text_from_rendered
         except ImportError:
             raise ImportError(
                 "marker-pdf is required. Install with: pip install marker-pdf"
             )
 
-        # Initialize Marker converter
-        models = create_model_dict()
+        # Get cached Marker models (preloaded at startup)
+        from api.index import get_marker_models
+        models = get_marker_models()
         converter = PdfConverter(artifact_dict=models)
 
         # Convert PDF to markdown
