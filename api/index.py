@@ -446,10 +446,15 @@ Rules:
 ## Tables that define sub-questions
 When a problem contains a table whose rows correspond to the labeled sub-parts (e.g. a table with rows a, b, c showing function pairs or data), preserve the table as a \\begin{tabular} in the stem text. The parts should then have EMPTY text (just the label and answer space) since the table already presents the content. Do NOT flatten table rows into separate part text fields — this loses the tabular formatting.
 
-## Referenced data (tables, models, formulas)
+## Problem-specific figures (ALWAYS include)
+If a figure or diagram is visually adjacent to a problem (directly above, below, or beside the question text), it almost certainly belongs to that problem. ALWAYS include these in the `figures` list — even if the question text never says "see figure" or "refer to the diagram." Use common sense: if a question asks you to identify, analyze, draw, or calculate something and there is a nearby figure (structural formula, graph, apparatus diagram, reaction scheme, molecule drawing, etc.) that would be needed to answer it, include it. The student cannot answer the question without seeing that figure.
+
+## Referenced data from other pages (tables, models, formulas)
 The images may include multiple pages. Some pages contain reference material (data tables, models, formulas, definitions) that problems refer to by name (e.g. "Table 1", "the model", "the equation above").
 
-ONLY include referenced data if the problem EXPLICITLY mentions it by name in its question text. If a problem does NOT mention "Table 1" or "the model" or similar, do NOT include that data — just extract the question as-is. Many problems are completely self-contained and need no additional context.
+For reference data on OTHER pages (not adjacent to the problem):
+- Only include it if the problem explicitly mentions it by name.
+- If a problem does NOT mention "Table 1" or "the model" or similar, do NOT include that data.
 
 When a problem DOES explicitly reference external data:
 - **Tables:** Include the table image file (e.g. table_5.jpg) in the question's `figures` list. Do NOT reproduce tables as \\begin{tabular} — the image preserves visual content (structural formulas, drawings) that cannot be represented in LaTeX.
@@ -701,8 +706,8 @@ async def ai_reconstruct(
                 extract_prompt += f"\n\n## Multiple Problems — CRITICAL\nThis image contains {len(labels)} SEPARATE numbered problems. Each one MUST be its own top-level Question object in the `questions` array.\n\nProblems to extract: {', '.join(labels)}\nExpected problem numbers: {', '.join(nums)}\n\nRules:\n- Return exactly {len(labels)} Question objects.\n- Each Question has its own `number` field matching the problem number shown in the document.\n- Do NOT nest different problem numbers as sub-parts of another question. Problem 9 is NOT a sub-part of Problem 8 — it is a separate question.\n- Only use `parts` for actual labeled sub-questions within a single problem (e.g. a, b, c)."
 
             if figure_filenames:
-                extract_prompt += "\n\nFigure files:\n" + "\n".join(figure_mappings)
-                extract_prompt += "\n\nUse these filenames in the figures lists."
+                extract_prompt += "\n\nFigure files available for this problem:\n" + "\n".join(figure_mappings)
+                extract_prompt += "\n\nThese figures were detected adjacent to this problem. Include them in the `figures` list if the question needs them to be answerable — even if the question text doesn't explicitly say \"see figure.\""
 
             # Choose schema: single Question or QuestionBatch
             if len(problems) == 1:
