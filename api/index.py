@@ -446,6 +446,15 @@ Rules:
 ## Tables that define sub-questions
 When a problem contains a table whose rows correspond to the labeled sub-parts (e.g. a table with rows a, b, c showing function pairs or data), preserve the table as a \\begin{tabular} in the stem text. The parts should then have EMPTY text (just the label and answer space) since the table already presents the content. Do NOT flatten table rows into separate part text fields — this loses the tabular formatting.
 
+## Referenced data (tables, models, formulas)
+The images may include multiple pages. Some pages contain reference material (data tables, models, formulas, definitions) that problems refer to by name (e.g. "Table 1", "the model", "the equation above").
+
+CRITICAL: If a problem references a table, model, dataset, or formula that appears elsewhere in the images, you MUST reproduce that referenced content in the question's `text` field as a LaTeX table or equation so the question is self-contained. The student will only see the extracted question — they will NOT have access to the original document pages.
+
+This applies to EVERY question that references the data — not just the first one. If problems 1 through 7 all reference "Table 1", then ALL seven questions must include Table 1 in their text field. Repetition is required because each question is displayed independently.
+
+Example: If a problem says "Refer to Table 1" and Table 1 shows data with columns Name, Formula, and \\% Composition, reproduce the full table in the question text using \\begin{tabular}.
+
 ## Answer space
 Estimate answer_space_cm at the most specific level (deepest part > parent part > question):
 - 1.0: multiple choice / true-false / short factual
