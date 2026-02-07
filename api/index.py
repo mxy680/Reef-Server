@@ -168,11 +168,8 @@ def annotate_page(img: Image.Image, layout_result, scale: int = 2, start_index: 
     # Main draw for outlines and text
     draw = ImageDraw.Draw(img)
 
-    # Try to load a font, fall back to default
-    try:
-        font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 24)
-    except:
-        font = ImageFont.load_default()
+    # Use Pillow's built-in font at large size (works on all platforms)
+    font = ImageFont.load_default(size=48)
 
     # All annotations in red
     rgb = (220, 53, 69)  # Red color
@@ -200,9 +197,9 @@ def annotate_page(img: Image.Image, layout_result, scale: int = 2, start_index: 
 
         # Draw index label
         label = str(current_index)
-        label_y = max(y1 - 32, 5)  # Don't go above image
+        label_y = max(y1 - 60, 5)  # Don't go above image
         text_bbox = draw.textbbox((x1, label_y), label, font=font)
-        padding = 6
+        padding = 10
         label_rect = (text_bbox[0] - padding, text_bbox[1] - padding,
                      text_bbox[2] + padding, text_bbox[3] + padding)
         draw.rectangle(label_rect, fill=rgb)
