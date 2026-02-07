@@ -610,26 +610,25 @@ async def ai_reconstruct(
                 best_problem.annotation_indices.sort()
                 print(f"  [reconstruct] Rescued orphan figure {idx} ({label}) -> {best_problem.label}")
 
-        # For each problem, crop regions from high-res images
+        # For each problem, send full annotated pages to the LLM for extraction.
         # Group problems by annotation indices to deduplicate LLM calls —
-        # when multiple problems share the same page crop (common when Surya
+        # when multiple problems share the same annotations (common when Surya
         # detects one large text block), extract all of them in a single call.
 
-        PADDING = 10   # pixels of padding around merged crop at 96 DPI
-        ANN_SCALE = 2  # annotated pages are 2x scaled from 96 DPI
-
-        def _compute_crops(problem: ProblemGroup):
-            """Compute page crops and figure data for a problem's annotations."""
+        def _get_extraction_images(problem: ProblemGroup):
+            """Get full annotated page images and figure data for a problem."""
             image_data: dict[str, str] = {}
             figure_filenames: list[str] = []
             figure_mappings: list[str] = []
-            page_bboxes: dict[int, list[float]] = {}
+            problem_pages: set[int] = set()
 
             for idx in problem.annotation_indices:
                 if idx not in bbox_index:
                     continue
                 page_num, bbox, label = bbox_index[idx]
+                problem_pages.add(page_num)
 
+                # Still extract figures from hi-res images
                 if label in FIGURE_LABELS:
                     hires = hires_images[page_num]
                     x1 = max(0, int(bbox[0] * crop_scale))
@@ -644,45 +643,30 @@ async def ai_reconstruct(
                         figure_filenames.append(fname)
                         figure_mappings.append(f"  - Red box #{idx} → {fname}")
 
-                if page_num not in page_bboxes:
-                    page_bboxes[page_num] = [bbox[0], bbox[1], bbox[2], bbox[3]]
-                else:
-                    mb = page_bboxes[page_num]
-                    mb[0] = min(mb[0], bbox[0])
-                    mb[1] = min(mb[1], bbox[1])
-                    mb[2] = max(mb[2], bbox[2])
-                    mb[3] = max(mb[3], bbox[3])
+            # Include page 0 as context if problem isn't on it
+            # (page 1 typically has models, tables, reference data)
+            if problem_pages and 0 not in problem_pages:
+                problem_pages.add(0)
 
-            page_crops: list[bytes] = []
-            for page_num in sorted(page_bboxes.keys()):
-                mb = page_bboxes[page_num]
-                ann_page = annotated_pages[page_num]
-                x1 = max(0, int((mb[0] - PADDING) * ANN_SCALE))
-                y1 = max(0, int((mb[1] - PADDING) * ANN_SCALE))
-                x2 = min(ann_page.width, int((mb[2] + PADDING) * ANN_SCALE))
-                y2 = min(ann_page.height, int((mb[3] + PADDING) * ANN_SCALE))
-                if x2 <= x1 or y2 <= y1:
-                    continue
-                buf = io.BytesIO()
-                ann_page.crop((x1, y1, x2, y2)).save(buf, format="JPEG", quality=90)
-                page_crops.append(buf.getvalue())
+            # Return full annotated pages in order
+            extraction_images = [page_images[p] for p in sorted(problem_pages)]
 
-            return page_crops, image_data, figure_filenames, figure_mappings
+            return extraction_images, image_data, figure_filenames, figure_mappings
 
         async def reconstruct_group(problems: list[ProblemGroup]) -> list[tuple[str, str, dict, dict | None]]:
             """Extract all questions sharing the same page regions in one LLM call."""
-            page_crops, image_data, figure_filenames, figure_mappings = _compute_crops(problems[0])
+            extraction_images, image_data, figure_filenames, figure_mappings = _get_extraction_images(problems[0])
 
             labels_str = ", ".join(p.label for p in problems)
-            print(f"  [reconstruct] Group [{labels_str}]: {len(page_crops)} page crops ({len(figure_filenames)} figures) from indices {problems[0].annotation_indices}")
+            print(f"  [reconstruct] Group [{labels_str}]: {len(extraction_images)} pages ({len(figure_filenames)} figures) from indices {problems[0].annotation_indices}")
 
-            if not page_crops:
+            if not extraction_images:
                 return [(p.label, "% No regions found", {}, None) for p in problems]
 
             # Build extraction prompt
             extract_prompt = EXTRACT_QUESTION_PROMPT
             if len(problems) == 1:
-                extract_prompt += f"\n\n## Target Problem\nExtract ONLY **{problems[0].label}** from the image."
+                extract_prompt += f"\n\n## Target Problem\nExtract ONLY **{problems[0].label}** from the annotated page images. The pages show numbered red bounding boxes — focus on the content within the relevant boxes. Other content on the page is context only."
             else:
                 labels = [p.label for p in problems]
                 nums = [re.findall(r"\d+", l)[0] for l in labels if re.findall(r"\d+", l)]
@@ -701,7 +685,7 @@ async def ai_reconstruct(
             raw = await asyncio.to_thread(
                 llm_client.generate,
                 prompt=extract_prompt,
-                images=page_crops,
+                images=extraction_images,
                 response_schema=schema,
             )
 
