@@ -1,7 +1,8 @@
 """
-Reef Server - FastAPI application for text embeddings and document analysis.
+Reef Server - FastAPI application for PDF reconstruction and text embeddings.
 
 Provides:
+- PDF reconstruction pipeline (Surya layout → Gemini grouping → OpenAI extraction → LaTeX)
 - Text embeddings using MiniLM-L6-v2
 - PDF layout annotation using Surya
 """
@@ -9,7 +10,7 @@ Provides:
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 import json
 import os
 import io
@@ -37,24 +38,6 @@ import fitz  # PyMuPDF
 # Global model cache
 _layout_predictor = None
 _foundation_predictor = None
-
-# Color palette for different layout types (RGB tuples)
-LAYOUT_COLORS = {
-    "Text": (52, 152, 219),        # Blue
-    "Title": (231, 76, 60),         # Red
-    "Section-header": (155, 89, 182), # Purple
-    "List-item": (46, 204, 113),    # Green
-    "Table": (243, 156, 18),        # Orange
-    "Figure": (233, 30, 99),        # Pink
-    "Caption": (0, 188, 212),       # Cyan
-    "Page-header": (121, 85, 72),   # Brown
-    "Page-footer": (96, 125, 139),  # Gray
-    "Footnote": (255, 87, 34),      # Deep Orange
-    "Formula": (103, 58, 183),      # Deep Purple
-    "Picture": (233, 30, 99),       # Pink (same as Figure)
-    "TextInlineMath": (103, 58, 183), # Deep Purple
-    "SectionHeader": (155, 89, 182),  # Purple (alt name)
-}
 
 def get_layout_predictor():
     """Get or create the layout predictor singleton."""
@@ -85,7 +68,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Reef Server",
-    description="Embedding service for Reef iOS app",
+    description="PDF reconstruction and embedding service for Reef iOS app",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -476,6 +459,7 @@ Estimate answer_space_cm at the most specific level (deepest part > parent part 
 async def ai_reconstruct(
     pdf: UploadFile = File(..., description="PDF file to reconstruct"),
     debug: bool = Query(default=False, description="Save intermediate files to data/"),
+    split: bool = Query(default=False, description="Return individual problem PDFs as JSON instead of merged PDF"),
 ):
     """
     Reconstruct a homework PDF into cleanly typeset LaTeX.
@@ -737,6 +721,21 @@ async def ai_reconstruct(
 
         compile_tasks = [compile_problem(i + 1, label, latex, image_data) for i, (p, (label, latex, image_data, _)) in enumerate(zip(group_result.problems, results))]
         compiled = await asyncio.gather(*compile_tasks)
+
+        if split:
+            # Return individual problem PDFs as JSON
+            problem_pdfs = []
+            for i, (label, pdf_bytes) in enumerate(compiled):
+                problem_pdfs.append({
+                    "number": i + 1,
+                    "label": label,
+                    "pdf_base64": base64.b64encode(pdf_bytes).decode()
+                })
+            return JSONResponse({
+                "problems": problem_pdfs,
+                "total_problems": len(problem_pdfs),
+                "page_count": num_pages
+            })
 
         # Merge all per-problem PDFs into one
         merged = fitz.open()

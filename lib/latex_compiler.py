@@ -10,18 +10,7 @@ import tempfile
 import base64
 import shutil
 from pathlib import Path
-from dataclasses import dataclass
 from typing import Optional
-
-
-@dataclass
-class CompiledQuestion:
-    """A compiled question PDF."""
-    order_index: int
-    question_number: str
-    pdf_base64: str
-    has_images: bool
-    has_tables: bool
 
 
 # LaTeX document template with essential packages
@@ -195,36 +184,3 @@ class LaTeXCompiler:
             if cleanup and temp_dir.exists():
                 shutil.rmtree(temp_dir, ignore_errors=True)
 
-    def compile_question(
-        self,
-        order_index: int,
-        question_number: str,
-        latex_content: str,
-        has_images: bool,
-        has_tables: bool,
-        image_data: Optional[dict[str, str]] = None
-    ) -> CompiledQuestion:
-        """
-        Compile a single question to PDF.
-
-        Args:
-            order_index: Question order in the document
-            question_number: Question number/identifier
-            latex_content: LaTeX content for the question
-            has_images: Whether the question contains images
-            has_tables: Whether the question contains tables
-            image_data: Dict of filename -> base64 encoded image data
-
-        Returns:
-            CompiledQuestion with base64-encoded PDF
-        """
-        pdf_bytes = self.compile_latex(latex_content, image_data)
-        pdf_base64 = base64.b64encode(pdf_bytes).decode("utf-8")
-
-        return CompiledQuestion(
-            order_index=order_index,
-            question_number=question_number,
-            pdf_base64=pdf_base64,
-            has_images=has_images,
-            has_tables=has_tables
-        )

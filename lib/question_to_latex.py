@@ -35,6 +35,8 @@ def _fix_json_latex_escapes(text: str) -> str:
     text = re.sub(r'\x0c(rac|orall)', r'\\f\1', text)
     # \r (carriage return) before LaTeX suffixes: \rightarrow, \right, \rangle, etc.
     text = re.sub(r'\r(ight|angle|aise|enewcommand)', r'\\r\1', text)
+    # \0 (null byte) before any LaTeX command suffix — restore to backslash
+    text = re.sub(r'\x00([a-zA-Z])', r'\\\1', text)
     return text
 
 

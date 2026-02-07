@@ -48,9 +48,6 @@ logs/
 .DS_Store
 Thumbs.db
 
-# Vercel
-.vercel
-
 # Generated extraction outputs
 documents/extractions/
 documents/extracted_*.pdf

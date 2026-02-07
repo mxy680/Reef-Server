@@ -1,18 +1,18 @@
 [project]
 name = "reef-server"
 version = "1.0.0"
-description = "FastAPI server for Reef iOS app - proxies Gemini API calls"
+description = "FastAPI server for Reef iOS app - PDF reconstruction and embeddings"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.109.0",
-    "httpx>=0.26.0",
     "openai>=1.0.0",
     "python-dotenv>=1.0.0",
     "python-multipart>=0.0.6",
     "uvicorn>=0.27.0",
     "sentence-transformers>=3.0.0",
     "surya-ocr>=0.8.0",
+    "transformers>=5.1.0",
     "pymupdf>=1.24.0",
 ]
 

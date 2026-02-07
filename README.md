@@ -1,34 +1,20 @@
 # Reef Server
 
-FastAPI server for Reef iOS app. Proxies Gemini API calls and provides testing infrastructure.
-
-## Features
-
-- **Gemini API Proxy**: Secure proxy for Gemini API calls (keeps API key server-side)
-- **Mock Mode**: Test without hitting real API
-- **Error Simulation**: Test error handling with simulated failures
-- **Latency Injection**: Test timeout handling
+FastAPI server for the Reef iOS app. Provides PDF reconstruction and text embedding services.
 
 ## Endpoints
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/gemini/generate` | POST | Proxy text generation |
-| `/gemini/vision` | POST | Proxy multimodal requests |
 | `/health` | GET | Health check |
-| `/logs` | GET | View request logs (dev only) |
+| `/ai/embed` | POST | Text embeddings (MiniLM-L6-v2) |
+| `/ai/annotate` | POST | PDF layout annotation (Surya) |
+| `/ai/group-problems` | POST | Group annotations into problems (Gemini) |
+| `/ai/reconstruct` | POST | Full PDF reconstruction pipeline |
 
-## Query Parameters
+## PDF Reconstruction Pipeline
 
-- `mode=mock` or `mode=prod` - Select mock or production mode
-- `delay=2000` - Add latency in milliseconds
-- `error=rate_limit` - Simulate 429 error
-- `error=timeout` - Simulate timeout
-- `error=500` - Simulate server error
-
-## Headers
-
-- `X-Mock-Scenario: <scenario>` - Select specific mock response
+`PDF pages -> Surya layout detection -> Gemini problem grouping -> OpenAI structured extraction -> LaTeX -> tectonic compilation -> merged PDF`
 
 ## Local Development
 
@@ -38,33 +24,12 @@ uv sync --all-extras
 
 # Copy environment variables
 cp .env.example .env
-# Edit .env with your GEMINI_API_KEY
+# Edit .env with your OPENROUTER_API_KEY
 
 # Run server
-uv run uvicorn api.index:app --reload
-```
-
-## Testing
-
-```bash
-# Run tests
-uv run pytest
-
-# Test mock mode
-curl -X POST http://localhost:8000/gemini/generate?mode=mock \
-  -H "Content-Type: application/json" \
-  -d '{"prompt": "Hello"}'
-
-# Test with delay
-curl -X POST http://localhost:8000/gemini/generate?mode=mock&delay=2000 \
-  -H "Content-Type: application/json" \
-  -d '{"prompt": "Hello"}'
+uv run uvicorn api.index:app --host 0.0.0.0 --port 8080
 ```
 
 ## Deployment
 
-Deployed on Vercel. Set `GEMINI_API_KEY` environment variable in Vercel dashboard.
-
-```bash
-vercel --prod
-```
+Deployed on Railway via Docker.
