@@ -15,8 +15,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && mv tectonic /usr/local/bin/ \
     && rm -rf /var/lib/apt/lists/*
 
-# Pre-warm tectonic bundle cache so parallel compiles don't race
-RUN echo '\documentclass{article}\begin{document}Hello\end{document}' > /tmp/warmup.tex \
+# Pre-warm tectonic bundle cache with ALL packages used in LATEX_TEMPLATE
+# This prevents parallel runtime compiles from racing to download packages
+RUN printf '\\documentclass[12pt,letterpaper]{article}\n\
+\\usepackage[margin=1in]{geometry}\n\
+\\usepackage{amsmath}\n\
+\\usepackage{amssymb}\n\
+\\usepackage{amsfonts}\n\
+\\usepackage{graphicx}\n\
+\\usepackage{booktabs}\n\
+\\usepackage{array}\n\
+\\usepackage{xcolor}\n\
+\\usepackage{needspace}\n\
+\\usepackage{algorithm}\n\
+\\usepackage{algorithmic}\n\
+\\usepackage{listings}\n\
+\\usepackage{caption}\n\
+\\usepackage{changepage}\n\
+\\usepackage{lmodern}\n\
+\\usepackage[T1]{fontenc}\n\
+\\begin{document}\n\
+$x^2 + y^2 = z^2$\n\
+\\begin{tabular}{ll}\\toprule a & b \\\\\\bottomrule\\end{tabular}\n\
+\\end{document}\n' > /tmp/warmup.tex \
     && tectonic /tmp/warmup.tex --outdir /tmp \
     && rm /tmp/warmup.tex /tmp/warmup.pdf
 
