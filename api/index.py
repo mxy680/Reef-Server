@@ -654,8 +654,9 @@ async def ai_reconstruct(
             if not page_crops:
                 return (problem.label, "% No regions found for this problem", {}, None)
 
-            # Build extraction prompt with figure info
+            # Build extraction prompt with problem label and figure info
             extract_prompt = EXTRACT_QUESTION_PROMPT
+            extract_prompt += f"\n\n## Target Problem\nExtract ONLY **{problem.label}** from the image. The image may contain multiple problems — ignore all others and extract only the one specified."
             if figure_filenames:
                 extract_prompt += "\n\nFigure files:\n" + "\n".join(figure_mappings)
                 extract_prompt += "\n\nUse these filenames in the figures lists."
