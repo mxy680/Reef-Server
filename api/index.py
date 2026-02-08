@@ -29,6 +29,8 @@ from collections import defaultdict
 from lib.models import EmbedRequest, EmbedResponse, ProblemGroup, GroupProblemsResponse, Question, QuestionBatch
 from lib.embedding import get_embedding_service
 from lib.question_to_latex import question_to_latex, _sanitize_text
+from lib.database import init_db, close_db
+from api.users import router as users_router
 
 # Surya imports
 from surya.foundation import FoundationPredictor
@@ -52,8 +54,11 @@ def get_layout_predictor():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Preload ML models at startup."""
+    """Preload ML models and initialize database at startup."""
     print("[Startup] Preloading models...")
+
+    # Initialize database (no-op if DATABASE_URL not set)
+    await init_db()
 
     # Preload embedding model
     print("[Startup] Loading embedding model...")
@@ -66,6 +71,7 @@ async def lifespan(app: FastAPI):
     yield
 
     print("[Shutdown] Cleaning up...")
+    await close_db()
 
 
 app = FastAPI(
@@ -83,6 +89,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include routers
+app.include_router(users_router)
 
 
 @app.get("/health")

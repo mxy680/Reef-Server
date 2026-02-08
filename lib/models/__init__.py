@@ -3,6 +3,7 @@
 from .embed import EmbedRequest, EmbedResponse
 from .group_problems import ProblemGroup, GroupProblemsResponse
 from .question import Part, Question, QuestionBatch
+from .user import UserProfileRequest, UserProfileResponse
 
 __all__ = [
     "EmbedRequest",
@@ -12,4 +13,6 @@ __all__ = [
     "Part",
     "Question",
     "QuestionBatch",
+    "UserProfileRequest",
+    "UserProfileResponse",
 ]
