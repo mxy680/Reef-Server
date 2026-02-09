@@ -66,6 +66,6 @@ print(f'Downloaded {ckpt} to {local}')"
 # Expose port
 EXPOSE 8000
 
-# Run the application (Railway sets PORT env var)
+# Run the application (PORT is set by docker-compose or defaults to 8000)
 # --timeout-keep-alive: Increase timeout for long-running question extraction
 CMD uvicorn api.index:app --host 0.0.0.0 --port ${PORT:-8000} --timeout-keep-alive 180

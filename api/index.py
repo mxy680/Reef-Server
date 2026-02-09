@@ -42,6 +42,7 @@ import fitz  # PyMuPDF
 # Global model cache
 _layout_predictor = None
 _foundation_predictor = None
+_layout_lock = asyncio.Lock()  # Serialize Surya inference (PyTorch models aren't thread-safe)
 
 def get_layout_predictor():
     """Get or create the layout predictor singleton."""
@@ -550,9 +551,10 @@ async def ai_reconstruct(
             hires_images.append(Image.frombytes("RGB", [pix.width, pix.height], pix.samples))
         doc.close()
 
-        # Run Surya layout detection on 96 DPI images
+        # Run Surya layout detection on 96 DPI images (serialized via lock)
         layout_predictor = get_layout_predictor()
-        layout_results = layout_predictor(surya_images)
+        async with _layout_lock:
+            layout_results = await asyncio.to_thread(layout_predictor, surya_images)
 
         # Annotate each page with continuous indexing
         annotated_pages = []
@@ -592,7 +594,8 @@ async def ai_reconstruct(
 
         # Call Gemini 2.0 Flash (via OpenRouter) to group annotations into problems
         prompt = GROUP_PROBLEMS_PROMPT.format(total_annotations=total_annotations)
-        raw_response = llm_client.generate(
+        raw_response = await asyncio.to_thread(
+            llm_client.generate,
             prompt=prompt,
             images=page_images,
             response_schema=GroupProblemsResponse.model_json_schema(),
