@@ -1,0 +1,8 @@
+api.studyreef.com {
+    reverse_proxy app:8000 {
+        transport http {
+            read_timeout 620s
+            write_timeout 620s
+        }
+    }
+}
