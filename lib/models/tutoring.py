@@ -37,7 +37,6 @@ class TutoringSession:
     # Reasoning state (Tier 2)
     last_reasoning_time: float = 0.0
     last_status: str | None = None
-    batches_since_reasoning: int = 0
     last_feedback: str | None = None
 
     # Lifecycle
@@ -56,16 +55,7 @@ class TutoringSession:
             self.full_transcript += "\n" + delta_latex
         else:
             self.full_transcript = delta_latex
-        self.batches_since_reasoning += 1
         self.last_activity = time.time()
-
-
-class TranscriptionResponse(BaseModel):
-    """Structured output from Tier 1 transcription."""
-
-    delta_latex: str
-    should_check: bool
-    corrected_transcript: str | None = None  # set when erasures detected
 
 
 class ReasoningResponse(BaseModel):

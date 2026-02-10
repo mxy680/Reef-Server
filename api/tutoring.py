@@ -1,29 +1,24 @@
 """WebSocket endpoint for real-time AI tutoring with two-tier pipeline.
 
-Tier 1: Handwriting transcription (Gemini Flash) — runs on every screenshot
-Tier 2: Reasoning + feedback (Gemini Flash + thinking) — triggered by pauses, intervals, or help
+Tier 1: Handwriting transcription (Gemini Flash) — raw LaTeX, runs on every screenshot
+Tier 2: Reasoning + feedback (Gemini Flash + thinking) — always runs after transcription
 """
 
 import asyncio
 import base64
 import json
 import os
-import re
 import time
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from lib.models.tutoring import ReasoningResponse, TranscriptionResponse, TutoringSession
+from lib.models.tutoring import ReasoningResponse, TutoringSession
 from lib.prompts.transcription import build_transcription_prompt
 from lib.prompts.reasoning import REASONING_SYSTEM_PROMPT, build_reasoning_prompt
 
 router = APIRouter()
 
-# Trigger parameters
-MIN_REASONING_INTERVAL = 8     # Floor: never reason more often than this (seconds)
-MAX_REASONING_INTERVAL = 30    # Ceiling: always reason after this if new work exists (seconds)
-MIN_BATCHES_FOR_REASONING = 2  # Need at least 2 transcription batches before first reasoning
-HELP_MIN_INTERVAL = 3          # Minimum interval for help button spam prevention (seconds)
+HELP_MIN_INTERVAL = 3  # Minimum interval for help button spam prevention (seconds)
 
 
 def _create_llm_clients():
@@ -52,13 +47,10 @@ async def _tier1_transcribe(
     image_bytes: bytes,
     batch_index: int,
     has_erasures: bool = False,
-) -> TranscriptionResponse:
-    """Run Tier 1 transcription on a screenshot. Returns structured response."""
+) -> str:
+    """Run Tier 1 transcription on a screenshot. Returns raw LaTeX text."""
     prompt = build_transcription_prompt(
         previous_transcript=session.full_transcript,
-        problem_text=session.problem_text,
-        course_name=session.course_name,
-        batches_since_check=session.batches_since_reasoning,
         has_erasures=has_erasures,
     )
 
@@ -69,23 +61,25 @@ async def _tier1_transcribe(
         temperature=0.1,
     )
 
-    # Parse JSON from raw text (no response_schema — it hurts Gemini vision via OpenRouter)
-    try:
-        result = TranscriptionResponse.model_validate_json(raw)
-    except Exception:
-        # Strip markdown fences if present
-        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
-        result = TranscriptionResponse.model_validate_json(cleaned)
+    # Clean up: strip markdown fences if model wrapped output
+    delta = raw.strip()
+    if delta.startswith("```"):
+        # Remove opening fence (```latex, ```tex, ```, etc.)
+        first_newline = delta.index("\n") if "\n" in delta else len(delta)
+        delta = delta[first_newline + 1:]
+    if delta.endswith("```"):
+        delta = delta[:-3]
+    delta = delta.strip()
 
-    # Handle erasure corrections: replace full transcript instead of appending
-    if result.corrected_transcript is not None:
-        session.full_transcript = result.corrected_transcript
-        session.batches_since_reasoning += 1
+    # Update session transcript
+    if has_erasures:
+        # Erasure mode: the model returned the complete corrected transcript
+        session.full_transcript = delta
         session.last_activity = time.time()
     else:
-        session.append_transcript(batch_index, result.delta_latex)
+        session.append_transcript(batch_index, delta)
 
-    return result
+    return delta
 
 
 async def _tier2_reason(
@@ -120,36 +114,8 @@ async def _tier2_reason(
     session.last_reasoning_time = time.time()
     session.last_status = response.status
     session.last_feedback = response.feedback
-    session.batches_since_reasoning = 0
 
     return response
-
-
-def _should_trigger_reasoning(session: TutoringSession, force: bool = False) -> bool:
-    """Check if Tier 2 reasoning should fire."""
-    now = time.time()
-    elapsed = now - session.last_reasoning_time
-
-    if force:
-        return elapsed >= HELP_MIN_INTERVAL
-
-    # Need minimum batches
-    if session.batches_since_reasoning < MIN_BATCHES_FOR_REASONING:
-        return False
-
-    # Floor check
-    if elapsed < MIN_REASONING_INTERVAL:
-        return False
-
-    return True
-
-
-def _check_max_interval(session: TutoringSession) -> bool:
-    """Check if the max interval ceiling has been exceeded."""
-    if session.batches_since_reasoning < MIN_BATCHES_FOR_REASONING:
-        return False
-    elapsed = time.time() - session.last_reasoning_time
-    return elapsed >= MAX_REASONING_INTERVAL
 
 
 async def _maybe_send_audio(
@@ -172,7 +138,6 @@ async def _maybe_send_audio(
                 "confidence": response.confidence,
             })
         except ImportError:
-            # TTS not available — fall back to text-only
             print("[Tutor WS] TTS not available, sending text-only feedback")
             await websocket.send_json({
                 "type": "tutor_feedback",
@@ -208,26 +173,20 @@ async def tutor_websocket(websocket: WebSocket):
     session: TutoringSession | None = None
     reasoning_lock = asyncio.Lock()
 
-    async def run_reasoning(subquestion: str | None = None, force: bool = False):
-        """Run Tier 2 reasoning if conditions are met, with lock to prevent overlap."""
+    async def run_reasoning(subquestion: str | None = None):
+        """Run Tier 2 reasoning with lock to prevent overlap."""
         nonlocal session
         if session is None:
             return
-        if not _should_trigger_reasoning(session, force=force):
-            return
 
         async with reasoning_lock:
-            # Re-check after acquiring lock (another task may have run reasoning)
-            if not _should_trigger_reasoning(session, force=force):
-                return
-
             try:
-                print(f"[Tutor WS] Running Tier 2 reasoning (force={force})")
+                print("[Tutor WS] Running Tier 2 reasoning")
                 response = await _tier2_reason(
                     reasoning_client, session, subquestion
                 )
                 print(
-                    f"[Tutor WS] Reasoning result: status={response.status}, "
+                    f"[Tutor WS] Reasoning: status={response.status}, "
                     f"confidence={response.confidence:.2f}, "
                     f"feedback={response.feedback!r}"
                 )
@@ -280,22 +239,21 @@ async def tutor_websocket(websocket: WebSocket):
                     f"size={len(image_bytes)} bytes"
                 )
 
-                # Tier 1: Transcription (structured output)
+                # Tier 1: Transcription (raw LaTeX)
                 try:
-                    result = await _tier1_transcribe(
+                    delta = await _tier1_transcribe(
                         transcription_client, session, image_bytes, batch_index,
                         has_erasures=has_erasures,
                     )
                     await websocket.send_json({
                         "type": "transcription",
                         "batch_index": batch_index,
-                        "delta_latex": result.delta_latex,
+                        "delta_latex": delta,
                         "full_latex": session.full_transcript,
                     })
                     print(
                         f"[Tutor WS] Transcription: batch={batch_index}, "
-                        f"should_check={result.should_check}, "
-                        f"delta={result.delta_latex[:80]!r}"
+                        f"delta={delta[:80]!r}"
                     )
                 except Exception as e:
                     print(f"[Tutor WS] Transcription error: {e}")
@@ -306,27 +264,26 @@ async def tutor_websocket(websocket: WebSocket):
                     })
                     continue
 
-                # Fire reasoning if model flagged should_check or max interval exceeded
-                if result.should_check or _check_max_interval(session):
-                    asyncio.create_task(run_reasoning(subquestion=subquestion))
+                # Tier 2: Always reason after transcription
+                asyncio.create_task(run_reasoning(subquestion=subquestion))
 
             elif msg_type == "pause":
                 if session is None:
                     continue
-                subquestion = msg.get("subquestion")
                 print(
                     f"[Tutor WS] Pause detected: duration={msg.get('duration', 0):.1f}s"
                 )
-                asyncio.create_task(run_reasoning(subquestion=subquestion))
 
             elif msg_type == "help":
                 if session is None:
                     continue
+                # Spam guard: ignore rapid help presses
+                elapsed = time.time() - session.last_reasoning_time
+                if elapsed < HELP_MIN_INTERVAL:
+                    continue
                 subquestion = msg.get("subquestion")
                 print("[Tutor WS] Help requested")
-                asyncio.create_task(
-                    run_reasoning(subquestion=subquestion, force=True)
-                )
+                asyncio.create_task(run_reasoning(subquestion=subquestion))
 
     except WebSocketDisconnect:
         print("[Tutor WS] Client disconnected")
