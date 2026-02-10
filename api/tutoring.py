@@ -8,6 +8,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import time
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -64,10 +65,16 @@ async def _tier1_transcribe(
         prompt=prompt,
         images=[image_bytes],
         temperature=0.1,
-        response_schema=TranscriptionResponse.model_json_schema(),
     )
 
-    result = TranscriptionResponse.model_validate_json(raw)
+    # Parse JSON from raw text (no response_schema — it hurts Gemini vision via OpenRouter)
+    try:
+        result = TranscriptionResponse.model_validate_json(raw)
+    except Exception:
+        # Strip markdown fences if present
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
+        result = TranscriptionResponse.model_validate_json(cleaned)
+
     session.append_transcript(batch_index, result.delta_latex)
     return result
 
