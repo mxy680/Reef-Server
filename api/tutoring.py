@@ -12,7 +12,7 @@ import time
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from lib.models.tutoring import ReasoningResponse, TutoringSession
+from lib.models.tutoring import ReasoningResponse, TranscriptionResponse, TutoringSession
 from lib.prompts.transcription import build_transcription_prompt
 from lib.prompts.reasoning import REASONING_SYSTEM_PROMPT, build_reasoning_prompt
 
@@ -50,19 +50,26 @@ async def _tier1_transcribe(
     session: TutoringSession,
     image_bytes: bytes,
     batch_index: int,
-) -> str:
-    """Run Tier 1 transcription on a screenshot. Returns delta LaTeX."""
-    prompt = build_transcription_prompt(session.full_transcript)
+) -> TranscriptionResponse:
+    """Run Tier 1 transcription on a screenshot. Returns structured response."""
+    prompt = build_transcription_prompt(
+        previous_transcript=session.full_transcript,
+        problem_text=session.problem_text,
+        course_name=session.course_name,
+        batches_since_check=session.batches_since_reasoning,
+    )
 
-    delta_latex = await asyncio.to_thread(
+    raw = await asyncio.to_thread(
         client.generate,
         prompt=prompt,
         images=[image_bytes],
         temperature=0.1,
+        response_schema=TranscriptionResponse.model_json_schema(),
     )
 
-    session.append_transcript(batch_index, delta_latex)
-    return delta_latex
+    result = TranscriptionResponse.model_validate_json(raw)
+    session.append_transcript(batch_index, result.delta_latex)
+    return result
 
 
 async def _tier2_reason(
@@ -255,20 +262,21 @@ async def tutor_websocket(websocket: WebSocket):
                     f"size={len(image_bytes)} bytes"
                 )
 
-                # Tier 1: Transcription
+                # Tier 1: Transcription (structured output)
                 try:
-                    delta_latex = await _tier1_transcribe(
+                    result = await _tier1_transcribe(
                         transcription_client, session, image_bytes, batch_index
                     )
                     await websocket.send_json({
                         "type": "transcription",
                         "batch_index": batch_index,
-                        "delta_latex": delta_latex,
+                        "delta_latex": result.delta_latex,
                         "full_latex": session.full_transcript,
                     })
                     print(
                         f"[Tutor WS] Transcription: batch={batch_index}, "
-                        f"delta={delta_latex[:80]!r}"
+                        f"should_check={result.should_check}, "
+                        f"delta={result.delta_latex[:80]!r}"
                     )
                 except Exception as e:
                     print(f"[Tutor WS] Transcription error: {e}")
@@ -279,8 +287,8 @@ async def tutor_websocket(websocket: WebSocket):
                     })
                     continue
 
-                # Check max interval ceiling — fire reasoning in background if exceeded
-                if _check_max_interval(session):
+                # Fire reasoning if model flagged should_check or max interval exceeded
+                if result.should_check or _check_max_interval(session):
                     asyncio.create_task(run_reasoning(subquestion=subquestion))
 
             elif msg_type == "pause":

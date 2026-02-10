@@ -60,6 +60,13 @@ class TutoringSession:
         self.last_activity = time.time()
 
 
+class TranscriptionResponse(BaseModel):
+    """Structured output from Tier 1 transcription."""
+
+    delta_latex: str
+    should_check: bool
+
+
 class ReasoningResponse(BaseModel):
     """Structured output from Tier 2 reasoning."""
 
