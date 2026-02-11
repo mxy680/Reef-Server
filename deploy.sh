@@ -24,6 +24,6 @@ ssh "$SERVER" "cd $REMOTE_DIR && docker compose ps"
 
 echo "==> Health check ..."
 sleep 5
-ssh "$SERVER" "curl -sf http://localhost:8000/health && echo ' OK' || echo ' FAILED'"
+ssh "$SERVER" "cd $REMOTE_DIR && docker compose exec app curl -sf http://localhost:8000/health && echo ' OK' || echo ' FAILED'"
 
 echo "==> Done."
