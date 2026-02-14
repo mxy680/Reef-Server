@@ -147,24 +147,24 @@ class TestClusterByBboxOverlap:
         assert len(infos) == 1
         assert labels[0] == 0
 
-    def test_fixed_pad_connects_nearby(self):
-        """Two bboxes within 5px pad should connect."""
-        # bbox A: 0-100, bbox B: 105-200 — gap of 5px = pad
+    def test_touching_edges_connect(self):
+        """Two bboxes sharing an edge should connect."""
+        # bbox A: 0-100, bbox B: 100-200 — touching at x=100
         entries = [
             _box_entry(0, 0, 100, 50, idx=0),
-            _box_entry(105, 0, 200, 50, idx=1),
+            _box_entry(100, 0, 200, 50, idx=1),
         ]
         _, labels, infos = cluster_by_bbox_overlap(entries)
 
         assert len(infos) == 1
         assert infos[0].stroke_count == 2
 
-    def test_beyond_pad_separates(self):
-        """Two bboxes with gap > 5px pad stay separate."""
-        # bbox A: 0-100, bbox B: 120-220 — gap of 20px >> 5px
+    def test_any_gap_separates(self):
+        """Two bboxes with any gap between them stay separate."""
+        # bbox A: 0-100, bbox B: 101-200 — 1px gap
         entries = [
             _box_entry(0, 0, 100, 50, idx=0),
-            _box_entry(120, 0, 220, 50, idx=1),
+            _box_entry(101, 0, 200, 50, idx=1),
         ]
         _, labels, infos = cluster_by_bbox_overlap(entries)
 

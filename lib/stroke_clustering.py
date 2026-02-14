@@ -14,7 +14,7 @@ import numpy as np
 from lib.database import get_pool
 from lib.models.clustering import ClusterInfo, ClusterResponse
 
-BBOX_PAD = 5.0  # fixed pixel expansion for overlap checks
+BBOX_PAD = 0.0  # strokes must touch/overlap cluster bbox to join
 
 
 @dataclass
