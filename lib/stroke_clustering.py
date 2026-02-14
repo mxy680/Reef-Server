@@ -121,8 +121,51 @@ def cluster_by_centroid_gap(
             current_label += 1
         labels[order[rank]] = current_label
 
+    # Merge clusters with overlapping y-bounding boxes (e.g. crossing marks
+    # on "2"s create strokes at slightly different y, splitting one line into
+    # multiple clusters).  If two clusters overlap vertically by more than 50%
+    # of the smaller one's height, they belong to the same line.
+    merge_map: dict[int, int] = {}  # old_label → canonical_label
+    for lbl in range(current_label + 1):
+        merge_map[lbl] = lbl
+
+    def _find(lbl: int) -> int:
+        while merge_map[lbl] != lbl:
+            lbl = merge_map[lbl]
+        return lbl
+
+    # Collect per-cluster y-ranges
+    cluster_y_ranges: dict[int, tuple[float, float]] = {}
+    for lbl in range(current_label + 1):
+        mask = labels == lbl
+        member_entries = [entries[i] for i in np.where(mask)[0]]
+        if member_entries:
+            cluster_y_ranges[lbl] = (
+                min(e.min_y for e in member_entries),
+                max(e.max_y for e in member_entries),
+            )
+
+    for a in range(current_label + 1):
+        for b in range(a + 1, current_label + 1):
+            if _find(a) == _find(b):
+                continue
+            if a not in cluster_y_ranges or b not in cluster_y_ranges:
+                continue
+            a_min, a_max = cluster_y_ranges[a]
+            b_min, b_max = cluster_y_ranges[b]
+            overlap = max(0, min(a_max, b_max) - max(a_min, b_min))
+            smaller_height = min(a_max - a_min, b_max - b_min) or 1
+            if overlap / smaller_height > 0.5:
+                merge_map[_find(b)] = _find(a)
+
+    # Relabel after merging
+    canonical_set = sorted(set(_find(l) for l in range(current_label + 1)))
+    relabel = {old: new for new, old in enumerate(canonical_set)}
+    for i in range(len(labels)):
+        labels[i] = relabel[_find(int(labels[i]))]
+
     # Build ClusterInfo list
-    num_clusters = current_label + 1
+    num_clusters = len(canonical_set)
     cluster_infos: list[ClusterInfo] = []
 
     for label in range(num_clusters):
