@@ -19,7 +19,11 @@ def _get_client() -> OpenAI:
 
 
 _BASE_PROMPT = """\
-Transcribe this handwritten math into LaTeX. Return only the LaTeX expression, no explanation or wrapping.
+Transcribe this handwriting into LaTeX. It may be math, text, or a mix of both.
+- For math: return the LaTeX expression (e.g. x^2 + 3x)
+- For plain text/words: return the text wrapped in \\text{} (e.g. \\text{hello world})
+- For mixed content: combine both (e.g. \\text{let } x = 5)
+Return only the LaTeX, no explanation or wrapping.
 
 Common handwriting ambiguities — prefer these interpretations:
 - "2" not "z" (handwritten 2 often looks like z)
