@@ -26,7 +26,16 @@ async def init_db():
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )
         """)
-    print("[DB] Connected and user_profiles table ready")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS stroke_logs (
+                id SERIAL PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                page INT NOT NULL,
+                received_at TIMESTAMPTZ DEFAULT NOW(),
+                strokes JSONB NOT NULL
+            )
+        """)
+    print("[DB] Connected and tables ready")
 
 
 async def close_db():

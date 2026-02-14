@@ -124,6 +124,7 @@ class LLMClient:
         prompt: str,
         images: list[bytes] | None = None,
         temperature: float | None = None,
+        response_schema: dict | None = None,
         system_message: str | None = None,
     ):
         """Yield text chunks as they arrive from the model."""
@@ -148,6 +149,11 @@ class LLMClient:
         }
         if temperature is not None:
             kwargs["temperature"] = temperature
+        if response_schema is not None:
+            kwargs["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": "response", "strict": True, "schema": _make_strict(response_schema)},
+            }
 
         stream = self.client.chat.completions.create(**kwargs)
         for chunk in stream:

@@ -35,9 +35,8 @@ from lib.embedding_client import get_embedding_service
 from lib.question_to_latex import question_to_latex, quiz_question_to_latex, _sanitize_text
 from lib.database import init_db, close_db
 from api.users import router as users_router
-from api.clustering import router as clustering_router
 from api.tts import router as tts_router
-from api.transcribe import router as transcribe_router
+from api.strokes import router as strokes_router
 
 from lib.surya_client import detect_layout
 from PIL import Image, ImageDraw, ImageFont
@@ -77,9 +76,8 @@ app.add_middleware(
 
 # Include routers
 app.include_router(users_router)
-app.include_router(clustering_router)
 app.include_router(tts_router)
-app.include_router(transcribe_router)
+app.include_router(strokes_router)
 
 
 @app.get("/health")
