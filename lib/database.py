@@ -81,6 +81,9 @@ async def init_db():
             )
         """)
         await conn.execute("""
+            ALTER TABLE clusters ADD COLUMN IF NOT EXISTS transcription TEXT NOT NULL DEFAULT ''
+        """)
+        await conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_clusters_session_page
             ON clusters(session_id, page)
         """)

@@ -13,7 +13,9 @@ from dataclasses import dataclass
 import numpy as np
 
 from lib.database import get_pool
+from lib.groq_vision import transcribe_strokes_image
 from lib.models.clustering import ClusterInfo, ClusterResponse
+from lib.stroke_renderer import render_strokes
 
 
 @dataclass
@@ -166,6 +168,15 @@ async def update_cluster_labels(session_id: str, page: int):
     if not rows:
         return
 
+    # Build stroke lookup: (log_id, stroke_index) → stroke dict
+    stroke_lookup: dict[tuple[int, int], dict] = {}
+    for row in rows:
+        log_id = row["id"]
+        strokes_json = row["strokes"]
+        strokes = strokes_json if isinstance(strokes_json, list) else json.loads(strokes_json)
+        for idx, stroke in enumerate(strokes):
+            stroke_lookup[(log_id, idx)] = stroke
+
     entries = extract_stroke_entries([dict(r) for r in rows])
     if not entries:
         return
@@ -186,6 +197,48 @@ async def update_cluster_labels(session_id: str, page: int):
             "UPDATE stroke_logs SET cluster_labels = $1::jsonb WHERE id = $2",
             [(json.dumps(lbls), log_id) for log_id, lbls in labels_by_log.items()],
         )
+
+    # Group strokes by cluster label for transcription
+    strokes_by_cluster: dict[int, list[dict]] = {}
+    for i, entry in enumerate(entries):
+        label = int(labels[i])
+        stroke = stroke_lookup.get((entry.log_id, entry.index))
+        if stroke:
+            strokes_by_cluster.setdefault(label, []).append(stroke)
+
+    # Render + transcribe each cluster, upsert into clusters table
+    for info in cluster_infos:
+        label = info.cluster_label
+        cluster_strokes = strokes_by_cluster.get(label, [])
+        transcription = ""
+        if cluster_strokes:
+            try:
+                image_bytes = render_strokes(cluster_strokes)
+                transcription = await asyncio.to_thread(transcribe_strokes_image, image_bytes)
+                print(f"[transcribe] cluster {label}: {transcription}")
+            except Exception as exc:
+                print(f"[transcribe] cluster {label} failed: {exc}")
+
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO clusters (session_id, page, cluster_label, stroke_count,
+                                      centroid_x, centroid_y, bbox_x1, bbox_y1, bbox_x2, bbox_y2, transcription)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                ON CONFLICT (session_id, page, cluster_label) DO UPDATE SET
+                    stroke_count = EXCLUDED.stroke_count,
+                    centroid_x = EXCLUDED.centroid_x, centroid_y = EXCLUDED.centroid_y,
+                    bbox_x1 = EXCLUDED.bbox_x1, bbox_y1 = EXCLUDED.bbox_y1,
+                    bbox_x2 = EXCLUDED.bbox_x2, bbox_y2 = EXCLUDED.bbox_y2,
+                    transcription = EXCLUDED.transcription
+                """,
+                session_id, page,
+                label, info.stroke_count,
+                info.centroid[0], info.centroid[1],
+                info.bounding_box[0], info.bounding_box[1],
+                info.bounding_box[2], info.bounding_box[3],
+                transcription,
+            )
 
 
 async def cluster_strokes(session_id: str, page: int) -> ClusterResponse:
