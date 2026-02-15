@@ -306,7 +306,7 @@ async def _assemble_context(session_id: str, page: int) -> str | None:
             FROM reasoning_logs
             WHERE session_id = $1 AND page = $2 AND action = 'speak'
             ORDER BY created_at DESC
-            LIMIT 5
+            LIMIT 10
             """,
             session_id, page,
         )
