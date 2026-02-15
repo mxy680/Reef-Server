@@ -104,7 +104,8 @@ def _trigram_similarity(a: str, b: str) -> float:
 async def _find_matching_question(conn, canvas_text: str, session_id: str | None = None) -> dict | None:
     """Try to find the question the student is working on by matching canvas content against DB questions.
 
-    Uses trigram similarity between the canvas content and question texts.
+    First tries exact label match (e.g. "Problem 4" in the text matches questions.label).
+    Falls back to trigram similarity for canvas transcription text.
     If session_id is provided and a match is found, caches the result in session_question_cache.
     Returns {"id": int, "text": str, "label": str} or None.
     """
@@ -114,7 +115,7 @@ async def _find_matching_question(conn, canvas_text: str, session_id: str | None
     # Get all questions that have answer keys (from most recent document first)
     rows = await conn.fetch(
         """
-        SELECT DISTINCT q.id, q.text, q.label, d.id AS doc_id
+        SELECT DISTINCT q.id, q.text, q.label, d.id AS doc_id, d.filename AS doc_filename
         FROM questions q
         JOIN documents d ON q.document_id = d.id
         JOIN answer_keys ak ON ak.question_id = q.id
@@ -124,17 +125,33 @@ async def _find_matching_question(conn, canvas_text: str, session_id: str | None
     if not rows:
         return None
 
-    best_score = 0.0
-    best_row = None
-    for r in rows:
-        score = _trigram_similarity(canvas_text, r["text"] or "")
-        if score > best_score:
-            best_score = score
-            best_row = r
+    matched_row = None
 
-    if best_row and best_score >= 0.05:  # Low threshold since canvas is partial work
-        print(f"[reasoning] matched canvas to question: id={best_row['id']} "
-              f"label={best_row['label']} similarity={best_score:.3f}")
+    # Strategy 1: Extract "Problem N" from the text and match on label exactly
+    label_match = re.match(r'(Problem\s+\d+)', canvas_text.strip(), re.IGNORECASE)
+    if label_match:
+        target_label = label_match.group(1)
+        for r in rows:
+            if r["label"] and r["label"].lower() == target_label.lower():
+                matched_row = r
+                print(f"[reasoning] exact label match: {target_label!r} -> Q{r['id']}")
+                break
+
+    # Strategy 2: Trigram similarity fallback (for canvas transcription text without labels)
+    if not matched_row:
+        best_score = 0.0
+        best_row = None
+        for r in rows:
+            score = _trigram_similarity(canvas_text, r["text"] or "")
+            if score > best_score:
+                best_score = score
+                best_row = r
+        if best_row and best_score >= 0.05:
+            matched_row = best_row
+            print(f"[reasoning] trigram match: Q{best_row['id']} "
+                  f"label={best_row['label']} similarity={best_score:.3f}")
+
+    if matched_row:
         # Cache the match for this session
         if session_id:
             try:
@@ -144,11 +161,11 @@ async def _find_matching_question(conn, canvas_text: str, session_id: str | None
                     VALUES ($1, $2, NOW())
                     ON CONFLICT (session_id) DO UPDATE SET question_id = $2, updated_at = NOW()
                     """,
-                    session_id, best_row["id"],
+                    session_id, matched_row["id"],
                 )
             except Exception as exc:
                 logger.error("Failed to cache question match: %s", exc)
-        return {"id": best_row["id"], "text": best_row["text"], "label": best_row["label"]}
+        return {"id": matched_row["id"], "text": matched_row["text"], "label": matched_row["label"], "doc_filename": matched_row["doc_filename"]}
 
     return None
 
@@ -157,16 +174,20 @@ async def _get_cached_question(conn, session_id: str) -> dict | None:
     """Retrieve the cached question match for a session, if any."""
     row = await conn.fetchrow(
         """
-        SELECT q.id, q.text, q.label
+        SELECT q.id, q.text, q.label, d.filename AS doc_filename,
+               sqc.document_name AS ios_doc_name
         FROM session_question_cache sqc
         JOIN questions q ON q.id = sqc.question_id
+        JOIN documents d ON q.document_id = d.id
         WHERE sqc.session_id = $1
         """,
         session_id,
     )
     if row:
         print(f"[reasoning] using cached question match: id={row['id']} label={row['label']}")
-        return {"id": row["id"], "text": row["text"], "label": row["label"]}
+        # Prefer the iOS-provided document name over the DB filename
+        doc_name = row["ios_doc_name"] or row["doc_filename"]
+        return {"id": row["id"], "text": row["text"], "label": row["label"], "doc_filename": doc_name}
     return None
 
 

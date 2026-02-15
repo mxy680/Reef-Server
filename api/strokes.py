@@ -161,17 +161,7 @@ async def get_stroke_logs(
             if matched_q:
                 matched_question_text = matched_q["text"]
                 matched_question_label = matched_q.get("label", "")
-                # Look up document name
-                doc_row = await conn.fetchrow(
-                    """
-                    SELECT d.filename FROM documents d
-                    JOIN questions q ON q.document_id = d.id
-                    WHERE q.id = $1
-                    """,
-                    matched_q["id"],
-                )
-                if doc_row:
-                    document_name = doc_row["filename"]
+                document_name = matched_q.get("doc_filename", "")
                 ak_rows = await conn.fetch(
                     "SELECT part_label, answer FROM answer_keys WHERE question_id = $1 ORDER BY id",
                     matched_q["id"],
@@ -407,6 +397,10 @@ async def strokes_websocket(ws: WebSocket, session_id: str = "", user_id: str = 
                 sid = msg.get("session_id", "")
                 page = msg.get("page", 0)
                 problem_context = msg.get("problem_context", "")
+                doc_name_raw = msg.get("document_name", "")
+                # Strip extension — DB stores stem only (e.g. "document" not "document.pdf")
+                doc_name = doc_name_raw.rsplit(".", 1)[0] if "." in doc_name_raw else doc_name_raw
+                question_number = msg.get("question_number")
                 pool = get_pool()
                 if pool and problem_context:
                     async with pool.acquire() as conn:
@@ -420,9 +414,57 @@ async def strokes_websocket(ws: WebSocket, session_id: str = "", user_id: str = 
                             msg.get("user_id", user_id),
                             problem_context,
                         )
-                        # Match the problem context to a question and cache it
-                        await _find_matching_question(conn, problem_context, session_id=sid)
+                        # Try exact lookup first (iOS sends document_name + question_number)
+                        matched = False
+                        if doc_name and question_number is not None:
+                            q_row = await conn.fetchrow(
+                                """
+                                SELECT q.id FROM questions q
+                                JOIN documents d ON q.document_id = d.id
+                                JOIN answer_keys ak ON ak.question_id = q.id
+                                WHERE d.filename = $1 AND q.number = $2
+                                ORDER BY d.id DESC LIMIT 1
+                                """,
+                                doc_name, question_number,
+                            )
+                            if q_row:
+                                await conn.execute(
+                                    """
+                                    INSERT INTO session_question_cache (session_id, question_id, document_name, updated_at)
+                                    VALUES ($1, $2, $3, NOW())
+                                    ON CONFLICT (session_id) DO UPDATE SET question_id = $2, document_name = $3, updated_at = NOW()
+                                    """,
+                                    sid, q_row["id"], doc_name_raw,
+                                )
+                                matched = True
+                                print(f"[strokes_ws] exact match: doc={doc_name!r} q_num={question_number} -> Q{q_row['id']}")
+                        # Fall back to trigram matching
+                        if not matched:
+                            await _find_matching_question(conn, problem_context, session_id=sid)
                     print(f"[strokes_ws] stored problem context for session {sid}: {problem_context[:80]}...")
+                elif pool and doc_name and question_number is not None:
+                    # Even without problem_context text, try exact match
+                    async with pool.acquire() as conn:
+                        q_row = await conn.fetchrow(
+                            """
+                            SELECT q.id FROM questions q
+                            JOIN documents d ON q.document_id = d.id
+                            JOIN answer_keys ak ON ak.question_id = q.id
+                            WHERE d.filename = $1 AND q.number = $2
+                            ORDER BY d.id DESC LIMIT 1
+                            """,
+                            doc_name, question_number,
+                        )
+                        if q_row:
+                            await conn.execute(
+                                """
+                                INSERT INTO session_question_cache (session_id, question_id, document_name, updated_at)
+                                VALUES ($1, $2, $3, NOW())
+                                ON CONFLICT (session_id) DO UPDATE SET question_id = $2, document_name = $3, updated_at = NOW()
+                                """,
+                                sid, q_row["id"], doc_name_raw,
+                            )
+                            print(f"[strokes_ws] exact match (no context): doc={doc_name!r} q_num={question_number} -> Q{q_row['id']}")
                 await ws.send_text(json.dumps({"type": "ack"}))
                 continue
 

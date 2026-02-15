@@ -163,6 +163,9 @@ async def init_db():
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )
         """)
+        await conn.execute("""
+            ALTER TABLE session_question_cache ADD COLUMN IF NOT EXISTS document_name TEXT NOT NULL DEFAULT ''
+        """)
     print("[DB] Connected and tables ready")
 
 
