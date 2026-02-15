@@ -12,7 +12,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 
 from lib.database import get_pool
-from lib.stroke_clustering import update_cluster_labels
+from lib.stroke_clustering import get_session_usage, update_cluster_labels
 
 router = APIRouter()
 
@@ -82,6 +82,21 @@ async def get_stroke_logs(
         transcriptions = {r["cluster_label"]: r["transcription"] for r in transcription_rows}
         content_types = {r["cluster_label"]: r["content_type"] for r in transcription_rows}
 
+    # Compute token usage and cost for session
+    usage = None
+    if session_id:
+        raw_usage = get_session_usage(session_id)
+        prompt_tokens = raw_usage["prompt_tokens"]
+        completion_tokens = raw_usage["completion_tokens"]
+        # Weighted average pricing: ~$0.55/M input, ~$0.78/M output
+        estimated_cost = (prompt_tokens * 0.55 + completion_tokens * 0.78) / 1_000_000
+        usage = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "calls": raw_usage["calls"],
+            "estimated_cost": round(estimated_cost, 6),
+        }
+
     return {
         "logs": [
             {
@@ -104,6 +119,7 @@ async def get_stroke_logs(
         "active_sessions": list(_active_sessions.values()),
         "transcriptions": transcriptions,
         "content_types": content_types,
+        "usage": usage,
     }
 
 

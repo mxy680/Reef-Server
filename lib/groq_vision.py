@@ -87,8 +87,11 @@ def _describe_image(client: OpenAI, data_url: str, problem_context: str = "") ->
         response_format={"type": "json_object"},
         max_tokens=256,
     )
+    usage = {}
+    if response.usage:
+        usage = {"prompt_tokens": response.usage.prompt_tokens, "completion_tokens": response.usage.completion_tokens}
     raw = response.choices[0].message.content.strip()
-    return json.loads(raw)
+    return json.loads(raw), usage
 
 
 # --- Stage 2: Generate TikZ (Llama 3.3 70B, text-only) ---
@@ -118,6 +121,9 @@ def _generate_tikz(client: OpenAI, description: str, elements: list) -> str:
         messages=[{"role": "user", "content": prompt}],
         max_tokens=512,
     )
+    usage = {}
+    if response.usage:
+        usage = {"prompt_tokens": response.usage.prompt_tokens, "completion_tokens": response.usage.completion_tokens}
     raw = response.choices[0].message.content.strip()
     # Strip markdown code fences if present
     if raw.startswith("```"):
@@ -126,7 +132,7 @@ def _generate_tikz(client: OpenAI, description: str, elements: list) -> str:
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
         raw = "\n".join(lines)
-    return raw
+    return raw, usage
 
 
 # --- Public API ---
@@ -138,12 +144,16 @@ def transcribe_strokes_image(image_bytes: bytes, problem_context: str = "") -> d
     b64 = base64.b64encode(image_bytes).decode("ascii")
     data_url = f"data:image/png;base64,{b64}"
 
+    total_usage = {"prompt_tokens": 0, "completion_tokens": 0}
+
     # Stage 1: classify + describe
     try:
-        stage1 = _describe_image(client, data_url, problem_context)
+        stage1, stage1_usage = _describe_image(client, data_url, problem_context)
+        total_usage["prompt_tokens"] += stage1_usage.get("prompt_tokens", 0)
+        total_usage["completion_tokens"] += stage1_usage.get("completion_tokens", 0)
     except (json.JSONDecodeError, AttributeError):
         logger.warning("Stage 1 JSON parse failed, falling back to math")
-        return {"content_type": "math", "transcription": ""}
+        return {"content_type": "math", "transcription": "", "usage": total_usage}
 
     content_type = stage1.get("content_type", "math")
     if content_type not in ("math", "diagram"):
@@ -154,6 +164,7 @@ def transcribe_strokes_image(image_bytes: bytes, problem_context: str = "") -> d
         return {
             "content_type": "math",
             "transcription": stage1.get("transcription", ""),
+            "usage": total_usage,
         }
 
     # Diagram: stage 2 — generate TikZ from description
@@ -162,9 +173,11 @@ def transcribe_strokes_image(image_bytes: bytes, problem_context: str = "") -> d
     logger.info("Stage 1 diagram description: %s", description)
 
     try:
-        tikz = _generate_tikz(client, description, elements)
+        tikz, stage2_usage = _generate_tikz(client, description, elements)
+        total_usage["prompt_tokens"] += stage2_usage.get("prompt_tokens", 0)
+        total_usage["completion_tokens"] += stage2_usage.get("completion_tokens", 0)
     except Exception:
         logger.exception("Stage 2 TikZ generation failed, returning description")
         tikz = f"% TikZ generation failed\n% Description: {description}"
 
-    return {"content_type": "diagram", "transcription": tikz}
+    return {"content_type": "diagram", "transcription": tikz, "usage": total_usage}

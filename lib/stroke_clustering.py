@@ -17,6 +17,23 @@ from lib.groq_vision import transcribe_strokes_image
 from lib.models.clustering import ClusterInfo, ClusterResponse
 from lib.stroke_renderer import render_strokes
 
+# Per-session token usage accumulator
+_session_usage: dict[str, dict] = {}
+
+
+def get_session_usage(session_id: str) -> dict:
+    """Return cumulative token usage for a session."""
+    return _session_usage.get(session_id, {"prompt_tokens": 0, "completion_tokens": 0, "calls": 0})
+
+
+def _accumulate_usage(session_id: str, usage: dict) -> None:
+    """Add token counts from a single transcription call to the session total."""
+    if session_id not in _session_usage:
+        _session_usage[session_id] = {"prompt_tokens": 0, "completion_tokens": 0, "calls": 0}
+    _session_usage[session_id]["prompt_tokens"] += usage.get("prompt_tokens", 0)
+    _session_usage[session_id]["completion_tokens"] += usage.get("completion_tokens", 0)
+    _session_usage[session_id]["calls"] += 1
+
 
 @dataclass
 class StrokeEntry:
@@ -442,6 +459,8 @@ async def update_cluster_labels(session_id: str, page: int):
                 result = await asyncio.to_thread(transcribe_strokes_image, image_bytes, problem_context)
                 content_type = result["content_type"]
                 transcription = result["transcription"]
+                if result.get("usage"):
+                    _accumulate_usage(session_id, result["usage"])
                 print(f"[transcribe] cluster {label} ({content_type}): {transcription[:80]}")
             except Exception as exc:
                 print(f"[transcribe] cluster {label} failed: {exc}")
