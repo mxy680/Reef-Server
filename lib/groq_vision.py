@@ -5,6 +5,7 @@ and diagram TikZ generation in one multimodal call.
 """
 
 import base64
+import json
 import logging
 import os
 
@@ -97,16 +98,12 @@ def transcribe_strokes_image(image_bytes: bytes, problem_context: str = "") -> d
         usage["prompt_tokens"] = response.usage.prompt_tokens or 0
         usage["completion_tokens"] = response.usage.completion_tokens or 0
 
-    result = response.choices[0].message.parsed or {}
-    if not result:
-        # Fallback to raw content parsing if parsed is None
-        import json
-        raw = response.choices[0].message.content or ""
-        try:
-            result = json.loads(raw.strip())
-        except (json.JSONDecodeError, ValueError):
-            logger.warning("JSON parse failed: %s", raw[:200])
-            return {"content_type": "math", "transcription": "", "usage": usage}
+    raw = response.choices[0].message.content or ""
+    try:
+        result = json.loads(raw.strip())
+    except (json.JSONDecodeError, ValueError):
+        logger.warning("JSON parse failed: %s", raw[:200])
+        return {"content_type": "math", "transcription": "", "usage": usage}
 
     content_type = result.get("content_type", "math")
     if content_type not in ("math", "diagram"):
