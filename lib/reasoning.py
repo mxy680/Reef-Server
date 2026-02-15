@@ -117,11 +117,11 @@ RESPONSE_SCHEMA = {
             "type": "object",
             "properties": {
                 "action": {"type": "string", "enum": ["none", "feedback"]},
-                "level": {"type": ["integer", "null"], "enum": [None, 1, 2, 3, 4]},
-                "target": {"type": ["string", "null"], "description": "Cluster ID e.g. C0, C1"},
-                "error_type": {"type": ["string", "null"], "enum": [None, "procedural", "conceptual", "strategic"]},
-                "delay_ms": {"type": "integer", "minimum": 0},
-                "message": {"type": ["string", "null"], "description": "TTS-ready message with Kokoro formatting"},
+                "level": {"anyOf": [{"type": "integer", "enum": [1, 2, 3, 4]}, {"type": "null"}]},
+                "target": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                "error_type": {"anyOf": [{"type": "string", "enum": ["procedural", "conceptual", "strategic"]}, {"type": "null"}]},
+                "delay_ms": {"type": "integer"},
+                "message": {"anyOf": [{"type": "string"}, {"type": "null"}]},
             },
             "required": ["action", "level", "target", "error_type", "delay_ms", "message"],
             "additionalProperties": False,
@@ -197,10 +197,21 @@ async def _assemble_context(session_id: str, page: int) -> str:
                     lines.append(f"[C{label}] ({ctype}): {tx}")
             sections.append("## Canvas State\n\n" + "\n".join(lines))
 
-        # Timeline: recent stroke activity
+        # Build cluster transcription lookup for timeline references
+        cluster_tx: dict[int, str] = {}
+        if clusters:
+            for c in clusters:
+                ctype = c["content_type"]
+                tx = c["transcription"]
+                if ctype == "diagram":
+                    cluster_tx[c["cluster_label"]] = "[diagram]"
+                else:
+                    cluster_tx[c["cluster_label"]] = tx
+
+        # Timeline: recent stroke activity with cluster context
         logs = await conn.fetch(
             """
-            SELECT event_type, message, received_at, strokes, deleted_count
+            SELECT event_type, message, received_at, strokes, deleted_count, cluster_labels
             FROM stroke_logs
             WHERE session_id = $1
             ORDER BY received_at DESC
@@ -222,8 +233,15 @@ async def _assemble_context(session_id: str, page: int) -> str:
                 elif etype == "erase":
                     timeline_lines.append(f"{time_str}  [erase] deleted {log['deleted_count']} strokes")
                 else:
-                    strokes = log["strokes"] if isinstance(log["strokes"], list) else json.loads(log["strokes"])
-                    timeline_lines.append(f"{time_str}  [draw] +{len(strokes)} strokes")
+                    # Show which clusters were written to and their current transcriptions
+                    labels_raw = log["cluster_labels"]
+                    labels = labels_raw if isinstance(labels_raw, list) else json.loads(labels_raw)
+                    affected = sorted(set(labels))
+                    parts = []
+                    for cl in affected:
+                        tx = cluster_tx.get(cl, "")
+                        parts.append(f"C{cl}: {tx}" if tx else f"C{cl}")
+                    timeline_lines.append(f"{time_str}  [draw] {'; '.join(parts)}")
             if timeline_lines:
                 sections.append("## Timeline\n\n" + "\n".join(timeline_lines))
 
