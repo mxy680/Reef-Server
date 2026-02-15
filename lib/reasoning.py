@@ -213,9 +213,27 @@ async def run_reasoning(session_id: str, page: int) -> dict:
             ],
             max_tokens=256,
         )
-    except Exception:
+    except Exception as exc:
         logger.exception("Reasoning LLM call failed")
-        return {"action": "silent", "message": "", "usage": {}}
+        error_msg = f"[ERROR] {type(exc).__name__}: {exc}"
+        print(f"[reasoning] LLM call failed: {error_msg}")
+        # Log the error to DB so it shows up in the dashboard
+        pool = get_pool()
+        if pool:
+            try:
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        """
+                        INSERT INTO reasoning_logs
+                            (session_id, page, context, action, message,
+                             prompt_tokens, completion_tokens, estimated_cost)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                        """,
+                        session_id, page, context, "error", error_msg, 0, 0, 0.0,
+                    )
+            except Exception:
+                pass
+        return {"action": "error", "message": error_msg, "usage": {}}
 
     usage = {"prompt_tokens": 0, "completion_tokens": 0}
     if response.usage:
