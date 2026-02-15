@@ -1,4 +1,4 @@
-"""Reasoning model client — Groq Gemini 2.5 Flash with structured output.
+"""Reasoning model client — Groq Kimi K2.5 with structured output.
 
 Called after transcription completes, only if no new strokes arrived
 during the transcription call. Prompt caching is automatic on Groq —
@@ -17,12 +17,12 @@ from lib.database import get_pool
 logger = logging.getLogger(__name__)
 
 _client: OpenAI | None = None
-_MODEL = "google/gemini-2.5-flash"
+_MODEL = "moonshotai/kimi-k2.5"
 
-# Pricing: Gemini 2.5 Flash on OpenRouter
-_PRICE_INPUT = 0.15  # $/M tokens
-_PRICE_INPUT_CACHED = 0.0375  # $/M tokens (cached)
-_PRICE_OUTPUT = 0.60  # $/M tokens
+# Pricing: Kimi K2.5 on OpenRouter
+_PRICE_INPUT = 0.45  # $/M tokens
+_PRICE_INPUT_CACHED = 0.45  # $/M tokens (no cached pricing listed)
+_PRICE_OUTPUT = 0.44  # $/M tokens
 
 
 def _get_client() -> OpenAI:
@@ -260,7 +260,7 @@ def _estimate_cost(prompt_tokens: int, completion_tokens: int, cached_tokens: in
 
 
 async def run_reasoning(session_id: str, page: int) -> dict | None:
-    """Assemble prompt, call Gemini 2.5 Flash, store result."""
+    """Assemble prompt, call Kimi K2.5, store result."""
     context = await _assemble_context(session_id, page)
     if not context:
         logger.info("[reasoning] No context for session %s, skipping", session_id)
@@ -281,7 +281,7 @@ async def run_reasoning(session_id: str, page: int) -> dict | None:
             )
         )
     except Exception:
-        logger.exception("[reasoning] Gemini 2.5 Flash call failed")
+        logger.exception("[reasoning] Kimi K2.5 call failed")
         return None
 
     # Parse usage
