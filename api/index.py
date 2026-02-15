@@ -33,7 +33,7 @@ import numpy as np
 from lib.models import EmbedRequest, EmbedResponse, ProblemGroup, GroupProblemsResponse, Question, QuestionBatch, QuizGenerationRequest, QuizQuestionResponse
 from lib.embedding_client import get_embedding_service
 from lib.question_to_latex import question_to_latex, quiz_question_to_latex, _sanitize_text
-from lib.database import init_db, close_db
+from lib.database import init_db, close_db, get_pool
 from api.users import router as users_router
 from api.tts import router as tts_router
 from api.strokes import router as strokes_router
@@ -888,6 +888,141 @@ async def ai_reconstruct(
                 json.dumps(questions, indent=2)
             )
             print(f"  [extract] Saved {len(questions)} structured questions to data/structured/{base_name}.json")
+
+        # Store document, questions, and bounding boxes in database
+        pool = get_pool()
+        document_id = None
+        question_ids: dict[str, int] = {}  # label -> question DB id
+        if pool:
+            t0 = time.perf_counter()
+            async with pool.acquire() as conn:
+                document_id = await conn.fetchval(
+                    """
+                    INSERT INTO documents (filename, page_count, total_problems)
+                    VALUES ($1, $2, $3) RETURNING id
+                    """,
+                    base_name, num_pages, len(group_result.problems),
+                )
+
+                for problem, (label, latex, image_data_dict, q_dict) in zip(group_result.problems, results):
+                    if q_dict is None:
+                        continue
+                    # Collect bounding boxes for this problem's annotations
+                    problem_bboxes = []
+                    for idx in problem.annotation_indices:
+                        if idx in bbox_index:
+                            page_num, bbox, lbl = bbox_index[idx]
+                            problem_bboxes.append({"page": page_num, "bbox": bbox, "label": lbl})
+
+                    qid = await conn.fetchval(
+                        """
+                        INSERT INTO questions (document_id, number, label, text, parts, figures,
+                                               annotation_indices, bboxes, answer_space_cm)
+                        VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, $9)
+                        RETURNING id
+                        """,
+                        document_id,
+                        q_dict.get("number", 0),
+                        problem.label,
+                        q_dict.get("text", ""),
+                        json.dumps(q_dict.get("parts", [])),
+                        json.dumps(q_dict.get("figures", [])),
+                        json.dumps(problem.annotation_indices),
+                        json.dumps(problem_bboxes),
+                        q_dict.get("answer_space_cm", 3.0),
+                    )
+                    question_ids[problem.label] = qid
+
+            print(f"  [db] Stored document {document_id} with {len(question_ids)} questions in {time.perf_counter()-t0:.2f}s")
+
+        # Generate answer keys in parallel via Gemini 3 Flash Preview
+        if pool and question_ids:
+            t0 = time.perf_counter()
+
+            async def generate_answer_key(problem: ProblemGroup, q_dict: dict, qid: int, max_retries: int = 3):
+                """Generate answer key for a single question and store in DB. Retries on failure."""
+                # Build a text representation of the question
+                q_text = q_dict.get("text", "")
+                parts = q_dict.get("parts", [])
+
+                def format_parts(parts_list, indent=0):
+                    lines = []
+                    for p in parts_list:
+                        prefix = "  " * indent + f"({p['label']})"
+                        lines.append(f"{prefix} {p['text']}")
+                        if p.get("parts"):
+                            lines.extend(format_parts(p["parts"], indent + 1))
+                    return lines
+
+                question_text = f"Problem {q_dict.get('number', '')}: {q_text}"
+                if parts:
+                    question_text += "\n" + "\n".join(format_parts(parts))
+
+                answer_prompt = f"""Solve the following problem completely. Show all work step by step.
+
+{question_text}
+
+For each part/subpart, provide a clear, complete solution. Use LaTeX notation for math (e.g. $x^2$, \\[...\\]).
+
+Respond with JSON:
+{{"answers": [{{"part_label": null or "a" or "b" etc., "answer": "step-by-step solution"}}]}}
+
+Use part_label: null for the main question (if no parts), or the part label for each subpart."""
+
+                last_exc = None
+                for attempt in range(max_retries):
+                    try:
+                        raw = await asyncio.to_thread(
+                            llm_client.generate,
+                            prompt=answer_prompt,
+                        )
+                        result = json.loads(raw)
+                        answers = result.get("answers", [])
+                        if not answers:
+                            raise ValueError("Empty answers list returned")
+                        break
+                    except Exception as exc:
+                        last_exc = exc
+                        wait = 2 ** attempt
+                        print(f"  [answer_key] {problem.label}: attempt {attempt+1}/{max_retries} failed — {exc}, retrying in {wait}s")
+                        await asyncio.sleep(wait)
+                else:
+                    # All retries exhausted — store a placeholder so no question is left without an answer key
+                    print(f"  [answer_key] {problem.label}: all {max_retries} attempts failed — {last_exc}, storing fallback")
+                    async with pool.acquire() as conn:
+                        await conn.execute(
+                            """
+                            INSERT INTO answer_keys (question_id, part_label, answer)
+                            VALUES ($1, $2, $3)
+                            """,
+                            qid,
+                            None,
+                            f"[Answer generation failed after {max_retries} attempts: {last_exc}]",
+                        )
+                    return
+
+                async with pool.acquire() as conn:
+                    for ans in answers:
+                        await conn.execute(
+                            """
+                            INSERT INTO answer_keys (question_id, part_label, answer)
+                            VALUES ($1, $2, $3)
+                            """,
+                            qid,
+                            ans.get("part_label"),
+                            ans.get("answer", ""),
+                        )
+                print(f"  [answer_key] {problem.label}: {len(answers)} answers stored")
+
+            answer_tasks = []
+            for problem, (label, latex, img_data, q_dict) in zip(group_result.problems, results):
+                if q_dict is not None and label in question_ids:
+                    answer_tasks.append(
+                        generate_answer_key(problem, q_dict, question_ids[label])
+                    )
+
+            await asyncio.gather(*answer_tasks)
+            print(f"  [timing] Answer key generation ({len(answer_tasks)} problems): {time.perf_counter()-t0:.2f}s")
 
         # Compile each LaTeX result to PDF in parallel
         from lib.latex_compiler import LaTeXCompiler
