@@ -12,12 +12,59 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 
 from lib.database import get_pool
+from lib.reasoning import clear_reasoning_usage, get_reasoning_usage, run_reasoning
 from lib.stroke_clustering import clear_session_usage, get_session_usage, update_cluster_labels
 
 router = APIRouter()
 
 _active_ws: set[WebSocket] = set()
 _active_sessions: dict[WebSocket, str] = {}
+
+# Reasoning debounce: per-(session, page) sequence counter
+_stroke_seq: dict[tuple[str, int], int] = {}
+REASONING_DELAY_S = 2.5
+
+
+async def _cluster_then_reason(session_id: str, page: int):
+    """Re-cluster, then debounce-trigger reasoning after a delay."""
+    # Bump sequence counter
+    key = (session_id, page)
+    _stroke_seq[key] = _stroke_seq.get(key, 0) + 1
+    seq_at_start = _stroke_seq[key]
+
+    # Run clustering (transcription happens inside)
+    await update_cluster_labels(session_id, page)
+
+    # Check if more strokes arrived during clustering
+    if _stroke_seq.get(key, 0) != seq_at_start:
+        return
+
+    # Wait for debounce period
+    await asyncio.sleep(REASONING_DELAY_S)
+
+    # Check again after delay
+    if _stroke_seq.get(key, 0) != seq_at_start:
+        return
+
+    # Run reasoning
+    try:
+        result = await run_reasoning(session_id, page)
+        if result["action"] == "speak":
+            # Send reasoning message to all WebSocket clients for this session
+            message = json.dumps({
+                "type": "reasoning",
+                "message": result["message"],
+                "session_id": session_id,
+                "page": page,
+            })
+            for ws, sid in list(_active_sessions.items()):
+                if sid == session_id:
+                    try:
+                        await ws.send_text(message)
+                    except Exception:
+                        pass
+    except Exception as exc:
+        print(f"[reasoning] error for session {session_id}: {exc}")
 
 
 @router.get("/api/stroke-logs")
@@ -159,13 +206,86 @@ async def clear_stroke_logs(
             await conn.execute(
                 "DELETE FROM clusters WHERE session_id = $1", session_id
             )
+            await conn.execute(
+                "DELETE FROM reasoning_logs WHERE session_id = $1", session_id
+            )
             clear_session_usage(session_id)
+            clear_reasoning_usage(session_id)
         else:
             result = await conn.execute("DELETE FROM stroke_logs")
             await conn.execute("DELETE FROM clusters")
+            await conn.execute("DELETE FROM reasoning_logs")
 
     count = int(result.split()[-1])
     return {"deleted": count}
+
+
+@router.get("/api/reasoning-logs")
+async def get_reasoning_logs(
+    session_id: Optional[str] = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+):
+    pool = get_pool()
+    if pool is None:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    async with pool.acquire() as conn:
+        if session_id:
+            rows = await conn.fetch(
+                """
+                SELECT id, session_id, page, created_at, action, message,
+                       prompt_tokens, completion_tokens, estimated_cost
+                FROM reasoning_logs
+                WHERE session_id = $1
+                ORDER BY created_at DESC
+                LIMIT $2
+                """,
+                session_id, limit,
+            )
+        else:
+            rows = await conn.fetch(
+                """
+                SELECT id, session_id, page, created_at, action, message,
+                       prompt_tokens, completion_tokens, estimated_cost
+                FROM reasoning_logs
+                ORDER BY created_at DESC
+                LIMIT $1
+                """,
+                limit,
+            )
+
+    # Compute reasoning usage for session
+    usage = None
+    if session_id:
+        raw = get_reasoning_usage(session_id)
+        prompt_tokens = raw["prompt_tokens"]
+        completion_tokens = raw["completion_tokens"]
+        # Gemini 2.5 Flash Preview via OpenRouter
+        estimated_cost = (prompt_tokens * 0.15 + completion_tokens * 0.60) / 1_000_000
+        usage = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "calls": raw["calls"],
+            "estimated_cost": round(estimated_cost, 6),
+        }
+
+    return {
+        "logs": [
+            {
+                "id": r["id"],
+                "session_id": r["session_id"],
+                "page": r["page"],
+                "created_at": r["created_at"].isoformat(),
+                "action": r["action"],
+                "message": r["message"],
+                "prompt_tokens": r["prompt_tokens"],
+                "completion_tokens": r["completion_tokens"],
+                "estimated_cost": r["estimated_cost"],
+            }
+            for r in rows
+        ],
+        "usage": usage,
+    }
 
 
 @router.websocket("/ws/strokes")
@@ -234,7 +354,13 @@ async def strokes_websocket(ws: WebSocket, session_id: str = "", user_id: str = 
                             session_id,
                             page,
                         )
+                        await conn.execute(
+                            "DELETE FROM reasoning_logs WHERE session_id = $1 AND page = $2",
+                            session_id,
+                            page,
+                        )
                 clear_session_usage(session_id)
+                clear_reasoning_usage(session_id)
                 await ws.send_text(json.dumps({"type": "ack"}))
                 continue
 
@@ -305,8 +431,8 @@ async def strokes_websocket(ws: WebSocket, session_id: str = "", user_id: str = 
                         deleted_count,
                         msg.get("user_id", user_id),
                     )
-                # Re-cluster in background (don't block ack)
-                asyncio.create_task(update_cluster_labels(session_id, page))
+                # Re-cluster + reasoning in background (don't block ack)
+                asyncio.create_task(_cluster_then_reason(session_id, page))
 
             await ws.send_text(json.dumps({"type": "ack"}))
 
