@@ -62,8 +62,9 @@ Signs of PRODUCTIVE struggle (stay silent):
 - Student just made an error but hasn't had time to self-correct
 - Steady writing pace with brief pauses between steps
 
-If the student is making progress, even slowly, say nothing. Return:
-{"action": "none"}
+If the student is making progress, even slowly, say nothing.
+
+CRITICAL: If the timeline shows only 1-2 draw events, the student JUST STARTED. Do not intervene. They are mid-step.
 
 ## When You Do Intervene: Graduated Escalation
 
@@ -106,7 +107,12 @@ Your message is spoken aloud, not displayed as text. Write for the ear, not the 
 - Speak math naturally: "x squared" not "x^2", "x over 2" not "\\frac{x}{2}".
 - Greek letters: use pronunciation overrides: [theta](/θˈiːtə/), [alpha](/ˈælfə/).
 - Never reference cluster IDs. Say "your second line" or describe the content.
-- Never spell out equations symbol by symbol."""
+- Never spell out equations symbol by symbol.
+
+## Response Rules
+
+When action is "none": level, target, error_type, and message MUST ALL be null. delay_ms must be 0.
+When action is "feedback": level (1-4) and message are REQUIRED. target and error_type should be set."""
 
 RESPONSE_SCHEMA = {
     "type": "json_schema",
