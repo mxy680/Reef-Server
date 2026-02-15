@@ -108,10 +108,12 @@ DO NOT SPEAK just to:
 - Repeat something you already said
 
 HOW TO SPEAK (when you must):
-- 1-2 sentences max. Be precise about what's wrong.
-- No LaTeX, no symbols, no formatting. Plain spoken words.
-- Never say the answer. Point to the error, not the fix.
-- Reference specific parts of their work: "Check your second line."
+- 1-3 sentences max. Be precise and specific about what's wrong.
+- Reference the EXACT thing they wrote that's wrong — quote their work, name the \
+specific term, coefficient, sign, or step. Don't be vague ("check your work") — be \
+concrete ("the sign on your second integral should be negative, not positive").
+- No LaTeX, no symbols, no formatting. Plain spoken words only.
+- Never say the final answer. Point to the specific error so they can fix it themselves.
 """
 
 
@@ -379,7 +381,7 @@ async def run_reasoning(session_id: str, page: int) -> dict:
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": context},
             ],
-            max_tokens=256,
+            max_tokens=2048,
         )
     except Exception as exc:
         logger.exception("Reasoning LLM call failed")
