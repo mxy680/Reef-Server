@@ -12,12 +12,43 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 
 from lib.database import get_pool
+from lib.reasoning import run_reasoning
 from lib.stroke_clustering import clear_session_usage, get_session_usage, update_cluster_labels
 
 router = APIRouter()
 
 _active_ws: set[WebSocket] = set()
 _active_sessions: dict[WebSocket, str] = {}
+
+# Per-session stroke sequence counter — increments on each stroke event.
+# After transcription finishes, reasoning only runs if no new strokes arrived.
+_stroke_seq: dict[str, int] = {}
+
+REASONING_DELAY_S = 2.5
+
+
+async def _cluster_then_reason(session_id: str, page: int, seq: int):
+    """Run clustering/transcription, then reasoning if no new strokes arrived."""
+    try:
+        await update_cluster_labels(session_id, page)
+        # Early exit if new strokes arrived during transcription
+        if _stroke_seq.get(session_id, 0) != seq:
+            print(f"[reasoning] new strokes during transcription, skipping")
+            return
+        # Debounce: wait before firing reasoning
+        print(f"[reasoning] transcription done, waiting {REASONING_DELAY_S}s (seq={seq})")
+        await asyncio.sleep(REASONING_DELAY_S)
+        # Re-check: did new strokes arrive during the delay?
+        if _stroke_seq.get(session_id, 0) != seq:
+            print(f"[reasoning] new strokes during delay, skipping")
+            return
+        print(f"[reasoning] no new strokes since seq={seq}, triggering reasoning")
+        result = await run_reasoning(session_id, page)
+        print(f"[reasoning] result: {result}")
+    except Exception as e:
+        print(f"[reasoning] ERROR: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 @router.get("/api/stroke-logs")
@@ -106,8 +137,8 @@ async def get_stroke_logs(
         raw_usage = get_session_usage(session_id)
         prompt_tokens = raw_usage["prompt_tokens"]
         completion_tokens = raw_usage["completion_tokens"]
-        # Weighted average pricing: ~$0.55/M input, ~$0.78/M output
-        estimated_cost = (prompt_tokens * 0.55 + completion_tokens * 0.78) / 1_000_000
+        # Gemini 3 Flash Preview via OpenRouter: $0.50/M input, $3.00/M output
+        estimated_cost = (prompt_tokens * 0.50 + completion_tokens * 3.00) / 1_000_000
         usage = {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
@@ -159,13 +190,108 @@ async def clear_stroke_logs(
             await conn.execute(
                 "DELETE FROM clusters WHERE session_id = $1", session_id
             )
+            await conn.execute(
+                "DELETE FROM reasoning_logs WHERE session_id = $1", session_id
+            )
             clear_session_usage(session_id)
+            _stroke_seq.pop(session_id, None)
         else:
             result = await conn.execute("DELETE FROM stroke_logs")
             await conn.execute("DELETE FROM clusters")
+            await conn.execute("DELETE FROM reasoning_logs")
 
     count = int(result.split()[-1])
     return {"deleted": count}
+
+
+@router.get("/api/reasoning-logs")
+async def get_reasoning_logs(
+    session_id: Optional[str] = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+):
+    pool = get_pool()
+    if pool is None:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    async with pool.acquire() as conn:
+        if session_id:
+            rows = await conn.fetch(
+                """
+                SELECT id, session_id, page, created_at, context,
+                       action, level, target, error_type, delay_ms, message,
+                       prompt_tokens, completion_tokens, cached_tokens, estimated_cost
+                FROM reasoning_logs
+                WHERE session_id = $1
+                ORDER BY created_at DESC
+                LIMIT $2
+                """,
+                session_id, limit,
+            )
+            total_row = await conn.fetchval(
+                "SELECT COUNT(*) FROM reasoning_logs WHERE session_id = $1",
+                session_id,
+            )
+            # Aggregate reasoning usage for this session
+            usage_row = await conn.fetchrow(
+                """
+                SELECT COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+                       COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+                       COALESCE(SUM(cached_tokens), 0) AS cached_tokens,
+                       COALESCE(SUM(estimated_cost), 0) AS estimated_cost,
+                       COUNT(*) AS calls
+                FROM reasoning_logs WHERE session_id = $1
+                """,
+                session_id,
+            )
+        else:
+            rows = await conn.fetch(
+                """
+                SELECT id, session_id, page, created_at, context,
+                       action, level, target, error_type, delay_ms, message,
+                       prompt_tokens, completion_tokens, cached_tokens, estimated_cost
+                FROM reasoning_logs
+                ORDER BY created_at DESC
+                LIMIT $1
+                """,
+                limit,
+            )
+            total_row = await conn.fetchval("SELECT COUNT(*) FROM reasoning_logs")
+            usage_row = None
+
+    reasoning_usage = None
+    if usage_row:
+        reasoning_usage = {
+            "prompt_tokens": usage_row["prompt_tokens"],
+            "completion_tokens": usage_row["completion_tokens"],
+            "cached_tokens": usage_row["cached_tokens"],
+            "estimated_cost": float(usage_row["estimated_cost"]),
+            "calls": usage_row["calls"],
+        }
+
+    return {
+        "logs": [
+            {
+                "id": r["id"],
+                "session_id": r["session_id"],
+                "page": r["page"],
+                "created_at": r["created_at"].isoformat(),
+                "context": r["context"],
+                "action": r["action"],
+                "level": r["level"],
+                "target": r["target"],
+                "error_type": r["error_type"],
+                "delay_ms": r["delay_ms"],
+                "message": r["message"],
+                "prompt_tokens": r["prompt_tokens"],
+                "completion_tokens": r["completion_tokens"],
+                "cached_tokens": r["cached_tokens"],
+                "estimated_cost": r["estimated_cost"],
+            }
+            for r in rows
+        ],
+        "total": total_row,
+        "reasoning_usage": reasoning_usage,
+    }
 
 
 @router.websocket("/ws/strokes")
@@ -235,6 +361,7 @@ async def strokes_websocket(ws: WebSocket, session_id: str = "", user_id: str = 
                             page,
                         )
                 clear_session_usage(session_id)
+                _stroke_seq.pop(session_id, None)
                 await ws.send_text(json.dumps({"type": "ack"}))
                 continue
 
@@ -305,8 +432,10 @@ async def strokes_websocket(ws: WebSocket, session_id: str = "", user_id: str = 
                         deleted_count,
                         msg.get("user_id", user_id),
                     )
-                # Re-cluster in background (don't block ack)
-                asyncio.create_task(update_cluster_labels(session_id, page))
+                # Bump stroke sequence, then cluster + reason in background
+                _stroke_seq[session_id] = _stroke_seq.get(session_id, 0) + 1
+                seq = _stroke_seq[session_id]
+                asyncio.create_task(_cluster_then_reason(session_id, page, seq))
 
             await ws.send_text(json.dumps({"type": "ack"}))
 
