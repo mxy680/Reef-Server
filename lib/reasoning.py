@@ -1,4 +1,4 @@
-"""Reasoning model client — Groq GPT-OSS 120B with structured output.
+"""Reasoning model client — Groq Gemini 2.5 Flash with structured output.
 
 Called after transcription completes, only if no new strokes arrived
 during the transcription call. Prompt caching is automatic on Groq —
@@ -17,21 +17,21 @@ from lib.database import get_pool
 logger = logging.getLogger(__name__)
 
 _client: OpenAI | None = None
-_MODEL = "openai/gpt-oss-120b"
+_MODEL = "google/gemini-2.5-flash"
 
-# Pricing: GPT-OSS 120B on Groq
-_PRICE_INPUT = 0.15  # $/M tokens (uncached)
-_PRICE_INPUT_CACHED = 0.075  # $/M tokens (cached)
+# Pricing: Gemini 2.5 Flash on OpenRouter
+_PRICE_INPUT = 0.15  # $/M tokens
+_PRICE_INPUT_CACHED = 0.0375  # $/M tokens (cached)
 _PRICE_OUTPUT = 0.60  # $/M tokens
 
 
 def _get_client() -> OpenAI:
     global _client
     if _client is None:
-        api_key = os.getenv("GROQ_API_KEY")
+        api_key = os.getenv("OPENROUTER_API_KEY")
         if not api_key:
-            raise RuntimeError("GROQ_API_KEY not set")
-        _client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
+            raise RuntimeError("OPENROUTER_API_KEY not set")
+        _client = OpenAI(api_key=api_key, base_url="https://openrouter.ai/api/v1")
     return _client
 
 
@@ -106,25 +106,28 @@ Your message is spoken aloud, not displayed as text. Write for the ear, not the 
 - Speak math naturally: "x squared" not "x^2", "x over 2" not "\\frac{x}{2}".
 - Greek letters: use pronunciation overrides: [theta](/θˈiːtə/), [alpha](/ˈælfə/).
 - Never reference cluster IDs. Say "your second line" or describe the content.
-- Never spell out equations symbol by symbol.
+- Never spell out equations symbol by symbol."""
 
-## Response Format
-
-You MUST respond with a JSON object. Use exactly this structure:
-{"action": "none", "level": null, "target": null, "error_type": null, "delay_ms": 0, "message": null}
-
-Or for feedback:
-{"action": "feedback", "level": 1, "target": "C0", "error_type": "procedural", "delay_ms": 500, "message": "Take another look at your second step."}
-
-Fields:
-- action: "none" or "feedback"
-- level: null (if none) or 1-4
-- target: null or cluster ID like "C0"
-- error_type: null or "procedural", "conceptual", "strategic"
-- delay_ms: milliseconds to wait before speaking (0+)
-- message: null or the TTS-ready spoken message"""
-
-RESPONSE_FORMAT = {"type": "json_object"}
+RESPONSE_SCHEMA = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "tutor_response",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["none", "feedback"]},
+                "level": {"anyOf": [{"type": "integer", "enum": [1, 2, 3, 4]}, {"type": "null"}]},
+                "target": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                "error_type": {"anyOf": [{"type": "string", "enum": ["procedural", "conceptual", "strategic"]}, {"type": "null"}]},
+                "delay_ms": {"type": "integer"},
+                "message": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            },
+            "required": ["action", "level", "target", "error_type", "delay_ms", "message"],
+            "additionalProperties": False,
+        },
+    },
+}
 
 
 async def _assemble_context(session_id: str, page: int) -> str:
@@ -257,7 +260,7 @@ def _estimate_cost(prompt_tokens: int, completion_tokens: int, cached_tokens: in
 
 
 async def run_reasoning(session_id: str, page: int) -> dict | None:
-    """Assemble prompt, call GPT-OSS 120B, store result."""
+    """Assemble prompt, call Gemini 2.5 Flash, store result."""
     context = await _assemble_context(session_id, page)
     if not context:
         logger.info("[reasoning] No context for session %s, skipping", session_id)
@@ -273,13 +276,12 @@ async def run_reasoning(session_id: str, page: int) -> dict | None:
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": context},
                 ],
-                response_format=RESPONSE_FORMAT,
+                response_format=RESPONSE_SCHEMA,
                 max_tokens=512,
-                extra_body={"reasoning_effort": "high"},
             )
         )
     except Exception:
-        logger.exception("[reasoning] GPT-OSS 120B call failed")
+        logger.exception("[reasoning] Gemini 2.5 Flash call failed")
         return None
 
     # Parse usage
