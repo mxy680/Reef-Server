@@ -64,11 +64,13 @@ Signs of PRODUCTIVE struggle (stay silent):
 
 If the student is making progress, even slowly, say nothing.
 
-CRITICAL: If the timeline shows only 1-2 draw events, the student JUST STARTED. Do not intervene. They are mid-step.
+## Graduated Response Levels
 
-## When You Do Intervene: Graduated Escalation
-
-Always use the MINIMUM effective intervention. Never skip levels.
+Level 0 — MONITORING: The student is mid-step or their work is correct so far. No intervention needed. Use this when:
+  - The student is actively writing (recent draw events, incomplete expression)
+  - Work so far is correct but not finished
+  - The student just started and hasn't had time to make errors
+  Always set action to "none" with level 0. No message is spoken.
 
 Level 1 — FLAG: Signal that something in a specific step deserves a second look. No explanation.
   Example: "Take another look at your second step."
@@ -111,7 +113,7 @@ Your message is spoken aloud, not displayed as text. Write for the ear, not the 
 
 ## Response Rules
 
-When action is "none": level, target, error_type, and message MUST ALL be null. delay_ms must be 0.
+When action is "none": set level to 0 (monitoring) or null. target, error_type, and message MUST be null. delay_ms must be 0.
 When action is "feedback": level (1-4) and message are REQUIRED. target and error_type should be set."""
 
 RESPONSE_SCHEMA = {
@@ -123,7 +125,7 @@ RESPONSE_SCHEMA = {
             "type": "object",
             "properties": {
                 "action": {"type": "string", "enum": ["none", "feedback"]},
-                "level": {"anyOf": [{"type": "integer", "enum": [1, 2, 3, 4]}, {"type": "null"}]},
+                "level": {"anyOf": [{"type": "integer", "enum": [0, 1, 2, 3, 4]}, {"type": "null"}]},
                 "target": {"anyOf": [{"type": "string"}, {"type": "null"}]},
                 "error_type": {"anyOf": [{"type": "string", "enum": ["procedural", "conceptual", "strategic"]}, {"type": "null"}]},
                 "delay_ms": {"type": "integer"},
