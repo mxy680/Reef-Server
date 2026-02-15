@@ -135,6 +135,8 @@ async def get_stroke_logs(
     # Fetch latest problem context for this session
     problem_context = ""
     matched_question_text = ""
+    matched_question_label = ""
+    document_name = ""
     answer_key = ""
     if session_id:
         async with pool.acquire() as conn:
@@ -158,6 +160,18 @@ async def get_stroke_logs(
                 matched_q = await _get_cached_question(conn, session_id)
             if matched_q:
                 matched_question_text = matched_q["text"]
+                matched_question_label = matched_q.get("label", "")
+                # Look up document name
+                doc_row = await conn.fetchrow(
+                    """
+                    SELECT d.filename FROM documents d
+                    JOIN questions q ON q.document_id = d.id
+                    WHERE q.id = $1
+                    """,
+                    matched_q["id"],
+                )
+                if doc_row:
+                    document_name = doc_row["filename"]
                 ak_rows = await conn.fetch(
                     "SELECT part_label, answer FROM answer_keys WHERE question_id = $1 ORDER BY id",
                     matched_q["id"],
@@ -210,6 +224,8 @@ async def get_stroke_logs(
         "usage": usage,
         "problem_context": problem_context or matched_question_text,
         "answer_key": answer_key,
+        "matched_question_label": matched_question_label,
+        "document_name": document_name,
     }
 
 
@@ -404,6 +420,8 @@ async def strokes_websocket(ws: WebSocket, session_id: str = "", user_id: str = 
                             msg.get("user_id", user_id),
                             problem_context,
                         )
+                        # Match the problem context to a question and cache it
+                        await _find_matching_question(conn, problem_context, session_id=sid)
                     print(f"[strokes_ws] stored problem context for session {sid}: {problem_context[:80]}...")
                 await ws.send_text(json.dumps({"type": "ack"}))
                 continue
