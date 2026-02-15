@@ -1,13 +1,10 @@
-"""Groq vision client for stroke transcription.
+"""Stroke transcription via Llama 4 Maverick on Groq.
 
-Two-stage pipeline for diagrams:
-  Stage 1 (Maverick, vision): classify + describe the image
-  Stage 2 (Llama 3.3 70B, text-only): generate TikZ from the description
-Math/text goes through stage 1 only.
+Single-stage pipeline: Maverick handles classification, math transcription,
+and diagram TikZ generation in one multimodal call.
 """
 
 import base64
-import json
 import logging
 import os
 
@@ -16,9 +13,7 @@ from openai import OpenAI
 logger = logging.getLogger(__name__)
 
 _client: OpenAI | None = None
-
-_MAVERICK_MODEL = "meta-llama/llama-4-maverick-17b-128e-instruct"
-_CODEGEN_MODEL = "llama-3.3-70b-versatile"
+_MODEL = "meta-llama/llama-4-maverick-17b-128e-instruct"
 
 
 def _get_client() -> OpenAI:
@@ -31,157 +26,98 @@ def _get_client() -> OpenAI:
     return _client
 
 
-# --- Stage 1: Classify + Describe (Maverick vision) ---
+_PROMPT = """\
+Transcribe this image of handwritten strokes.
 
-_DESCRIBE_PROMPT = """\
-Look at this image of handwritten strokes. Classify it and either transcribe or describe it.
+- "math": text, numbers, math expressions, equations, words, or any written symbols. \
+Transcribe as LaTeX (e.g. x^2 + 3x). For plain text use \\text{}.
+- "diagram": drawings, graphs, coordinate planes, geometric shapes, circuits, arrows, sketches. \
+Set transcription to a brief description. Set tikz to TikZ code (\\begin{tikzpicture}...\\end{tikzpicture}), no preamble.
 
-Step 1: Decide the content type.
-- "math" — text, numbers, math expressions, equations, words, or any written symbols
-- "diagram" — drawings, graphs, coordinate planes, geometric shapes, circuits, arrows, sketches, or any non-text visual
+Crossed-out content (X drawn over writing) should be OMITTED entirely.
 
-Step 2: Based on the type, fill in the appropriate fields.
+Handwriting preferences: "2" not "z", "x" not "×", "1" not "l", "0" not "O", "5" not "S", \
+"4" not "11", "\\int" not "int"."""
 
-If "math":
-- Set "transcription" to the LaTeX (e.g. x^2 + 3x). For plain text use \\text{} (e.g. \\text{hello}).
-- Leave "description" and "elements" empty.
-
-If "diagram":
-- Set "description" to a detailed natural-language description of the diagram.
-- Set "elements" to a list of diagram elements, each with a "type" and relevant properties.
-  Element types: axis, curve, line, point, shape, label, arrow, region, or other.
-  Include coordinates, labels, equations, styles (solid/dashed/dotted), and any other relevant details.
-- Leave "transcription" empty.
-
-Crossed-out content:
-- An X drawn over a symbol or expression means the student crossed it out / deleted it. OMIT crossed-out content entirely from the transcription.
-- Do NOT transcribe the X itself as a variable or multiplication sign when it's clearly a strike-through mark (large, overlapping existing writing).
-
-Common handwriting ambiguities — prefer these interpretations:
-- "2" not "z", "x" not "×", "1" not "l", "0" not "O", "5" not "S"
-
-Respond with JSON only, no other text:
-{"content_type": "math" or "diagram", "transcription": "...", "description": "...", "elements": [...]}"""
-
-_CONTEXT_TEMPLATE = """
-
-The student is working on this problem:
-{problem_context}
-
-Use this context to disambiguate characters, notation, and diagram meaning."""
-
-
-def _describe_image(client: OpenAI, data_url: str, problem_context: str = "") -> dict:
-    """Stage 1: Classify and describe the stroke image using Maverick vision."""
-    prompt = _DESCRIBE_PROMPT
-    if problem_context:
-        prompt += _CONTEXT_TEMPLATE.format(problem_context=problem_context)
-
-    response = client.chat.completions.create(
-        model=_MAVERICK_MODEL,
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": data_url}},
-                ],
-            }
-        ],
-        response_format={"type": "json_object"},
-        max_tokens=256,
-    )
-    usage = {}
-    if response.usage:
-        usage = {"prompt_tokens": response.usage.prompt_tokens, "completion_tokens": response.usage.completion_tokens}
-    raw = response.choices[0].message.content.strip()
-    return json.loads(raw), usage
-
-
-# --- Stage 2: Generate TikZ (Llama 3.3 70B, text-only) ---
-
-_TIKZ_PROMPT = """\
-Generate TikZ code for the following diagram.
-
-Description: {description}
-
-Elements:
-{elements}
-
-Rules:
-- Output ONLY the TikZ code, starting with \\begin{{tikzpicture}} and ending with \\end{{tikzpicture}}.
-- No preamble, no \\documentclass, no \\usepackage, no explanation.
-- Use accurate coordinates and labels from the element list.
-- Use appropriate TikZ libraries (arrows, shapes, etc.) via \\usetikzlibrary inside the tikzpicture if needed."""
-
-
-def _generate_tikz(client: OpenAI, description: str, elements: list) -> str:
-    """Stage 2: Generate TikZ from a structured diagram description (text-only)."""
-    elements_str = json.dumps(elements, indent=2) if elements else "[]"
-    prompt = _TIKZ_PROMPT.format(description=description, elements=elements_str)
-
-    response = client.chat.completions.create(
-        model=_CODEGEN_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=512,
-    )
-    usage = {}
-    if response.usage:
-        usage = {"prompt_tokens": response.usage.prompt_tokens, "completion_tokens": response.usage.completion_tokens}
-    raw = response.choices[0].message.content.strip()
-    # Strip markdown code fences if present
-    if raw.startswith("```"):
-        lines = raw.split("\n")
-        lines = lines[1:]  # remove opening fence
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        raw = "\n".join(lines)
-    return raw, usage
-
-
-# --- Public API ---
+_RESPONSE_SCHEMA = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "stroke_transcription",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "content_type": {
+                    "type": "string",
+                    "enum": ["math", "diagram"],
+                },
+                "transcription": {
+                    "type": "string",
+                    "description": "LaTeX for math, brief description for diagrams",
+                },
+                "tikz": {
+                    "type": "string",
+                    "description": "TikZ code for diagrams, empty string for math",
+                },
+            },
+            "required": ["content_type", "transcription", "tikz"],
+            "additionalProperties": False,
+        },
+    },
+}
 
 
 def transcribe_strokes_image(image_bytes: bytes, problem_context: str = "") -> dict:
-    """Classify and transcribe stroke image. Returns {"content_type": str, "transcription": str}."""
+    """Classify and transcribe stroke image. Returns {"content_type": str, "transcription": str, "usage": dict}."""
     client = _get_client()
     b64 = base64.b64encode(image_bytes).decode("ascii")
     data_url = f"data:image/png;base64,{b64}"
 
-    total_usage = {"prompt_tokens": 0, "completion_tokens": 0}
-
-    # Stage 1: classify + describe
     try:
-        stage1, stage1_usage = _describe_image(client, data_url, problem_context)
-        total_usage["prompt_tokens"] += stage1_usage.get("prompt_tokens", 0)
-        total_usage["completion_tokens"] += stage1_usage.get("completion_tokens", 0)
-    except (json.JSONDecodeError, AttributeError):
-        logger.warning("Stage 1 JSON parse failed, falling back to math")
-        return {"content_type": "math", "transcription": "", "usage": total_usage}
+        response = client.chat.completions.create(
+            model=_MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": _PROMPT},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                }
+            ],
+            response_format=_RESPONSE_SCHEMA,
+            max_tokens=512,
+        )
+    except Exception:
+        logger.exception("Maverick transcription call failed")
+        return {"content_type": "math", "transcription": "", "usage": {"prompt_tokens": 0, "completion_tokens": 0}}
 
-    content_type = stage1.get("content_type", "math")
+    usage = {"prompt_tokens": 0, "completion_tokens": 0}
+    if response.usage:
+        usage["prompt_tokens"] = response.usage.prompt_tokens or 0
+        usage["completion_tokens"] = response.usage.completion_tokens or 0
+
+    result = response.choices[0].message.parsed or {}
+    if not result:
+        # Fallback to raw content parsing if parsed is None
+        import json
+        raw = response.choices[0].message.content or ""
+        try:
+            result = json.loads(raw.strip())
+        except (json.JSONDecodeError, ValueError):
+            logger.warning("JSON parse failed: %s", raw[:200])
+            return {"content_type": "math", "transcription": "", "usage": usage}
+
+    content_type = result.get("content_type", "math")
     if content_type not in ("math", "diagram"):
         content_type = "math"
 
-    # Math: return transcription directly from stage 1
-    if content_type == "math":
-        return {
-            "content_type": "math",
-            "transcription": stage1.get("transcription", ""),
-            "usage": total_usage,
-        }
+    transcription = result.get("transcription", "")
 
-    # Diagram: stage 2 — generate TikZ from description
-    description = stage1.get("description", "")
-    elements = stage1.get("elements", [])
-    logger.info("Stage 1 diagram description: %s", description)
+    # For diagrams, prefer tikz if available
+    if content_type == "diagram":
+        tikz = result.get("tikz", "")
+        if tikz:
+            transcription = tikz
 
-    try:
-        tikz, stage2_usage = _generate_tikz(client, description, elements)
-        total_usage["prompt_tokens"] += stage2_usage.get("prompt_tokens", 0)
-        total_usage["completion_tokens"] += stage2_usage.get("completion_tokens", 0)
-    except Exception:
-        logger.exception("Stage 2 TikZ generation failed, returning description")
-        tikz = f"% TikZ generation failed\n% Description: {description}"
-
-    return {"content_type": "diagram", "transcription": tikz, "usage": total_usage}
+    return {"content_type": content_type, "transcription": transcription, "usage": usage}
