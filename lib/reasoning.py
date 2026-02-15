@@ -82,6 +82,8 @@ WHEN TO SPEAK (the ONLY reasons to break silence):
 - Something they WROTE is wrong — a specific, concrete error in their work.
 - They're going down a completely wrong path — gently redirect.
 - They got the final answer wrong — note something's off without giving the answer.
+- You previously pointed out a mistake, and the student has now fixed it — brief \
+  acknowledgment like "that's it" or "yes". This is the ONLY time encouragement is allowed.
 
 INCOMPLETE WORK IS NOT AN ERROR:
 - If they've only written part of a solution, they're probably still working on it.
@@ -89,12 +91,19 @@ INCOMPLETE WORK IS NOT AN ERROR:
   haven't gotten there yet. Do not point out things they haven't written.
 - Only flag what IS written, never what ISN'T written yet.
 
+YOUR PREVIOUS MESSAGES:
+- You will see what you already told the student. Do not repeat yourself.
+- Do not say the same thing in different words.
+- If you already pointed out an error and the student hasn't fixed it yet, stay silent — \
+  they heard you and are working on it.
+
 DO NOT SPEAK just to:
-- Encourage or praise ("good", "nice", "keep going", "that's correct")
+- Encourage or praise (unless they just fixed a mistake you pointed out)
 - Confirm correct intermediate steps
 - Summarize what they wrote
 - Fill silence while they're thinking
 - Point out missing terms, steps, or parts they haven't written yet
+- Repeat something you already said
 
 HOW TO SPEAK (when you must):
 - 1-2 sentences max. Be precise about what's wrong.
@@ -290,6 +299,18 @@ async def _assemble_context(session_id: str, page: int) -> str | None:
             session_id, page,
         )
 
+        # Previous reasoning messages (what you already said)
+        reasoning_rows = await conn.fetch(
+            """
+            SELECT action, message, created_at
+            FROM reasoning_logs
+            WHERE session_id = $1 AND page = $2 AND action = 'speak'
+            ORDER BY created_at DESC
+            LIMIT 5
+            """,
+            session_id, page,
+        )
+
     # Format context
     sections = []
 
@@ -323,6 +344,13 @@ async def _assemble_context(session_id: str, page: int) -> str | None:
                 timeline_lines.append(f"{ts} — {r['message']}")
         if timeline_lines:
             sections.append("RECENT ACTIVITY:\n" + "\n".join(timeline_lines))
+
+    if reasoning_rows:
+        prev_lines = []
+        for r in reversed(reasoning_rows):  # chronological order
+            ts = r["created_at"].strftime("%H:%M:%S")
+            prev_lines.append(f"{ts} — You said: \"{r['message']}\"")
+        sections.append("YOUR PREVIOUS MESSAGES (what you already told the student):\n" + "\n".join(prev_lines))
 
     return "\n\n".join(sections)
 
