@@ -17,7 +17,11 @@ from lib.database import get_pool
 logger = logging.getLogger(__name__)
 
 _client: OpenAI | None = None
-_MODEL = "google/gemini-2.5-flash-preview"
+_MODEL = "openai/gpt-oss-120b"
+
+# Pricing: GPT-OSS 120B on Groq
+_PRICE_INPUT = 0.15  # $/M tokens
+_PRICE_OUTPUT = 0.60  # $/M tokens
 
 # Per-session reasoning usage accumulator
 _reasoning_usage: dict[str, dict] = {}
@@ -42,10 +46,10 @@ def _accumulate_usage(session_id: str, usage: dict) -> None:
 def _get_client() -> OpenAI:
     global _client
     if _client is None:
-        api_key = os.getenv("OPENROUTER_API_KEY")
+        api_key = os.getenv("GROQ_API_KEY")
         if not api_key:
-            raise RuntimeError("OPENROUTER_API_KEY not set")
-        _client = OpenAI(api_key=api_key, base_url="https://openrouter.ai/api/v1")
+            raise RuntimeError("GROQ_API_KEY not set")
+        _client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
     return _client
 
 
@@ -230,8 +234,8 @@ async def run_reasoning(session_id: str, page: int) -> dict:
     if message:
         print(f"[reasoning] message: {message}")
 
-    # Estimate cost — Gemini 2.5 Flash Preview via OpenRouter
-    estimated_cost = (usage["prompt_tokens"] * 0.15 + usage["completion_tokens"] * 0.60) / 1_000_000
+    # Estimate cost — GPT-OSS 120B on Groq
+    estimated_cost = (usage["prompt_tokens"] * _PRICE_INPUT + usage["completion_tokens"] * _PRICE_OUTPUT) / 1_000_000
 
     # Store to database
     pool = get_pool()

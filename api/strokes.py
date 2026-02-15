@@ -260,7 +260,7 @@ async def get_reasoning_logs(
         raw = get_reasoning_usage(session_id)
         prompt_tokens = raw["prompt_tokens"]
         completion_tokens = raw["completion_tokens"]
-        # Gemini 2.5 Flash Preview via OpenRouter
+        # GPT-OSS 120B on Groq
         estimated_cost = (prompt_tokens * 0.15 + completion_tokens * 0.60) / 1_000_000
         usage = {
             "prompt_tokens": prompt_tokens,
