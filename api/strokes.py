@@ -265,15 +265,13 @@ async def clear_stroke_logs(
             await conn.execute(
                 "DELETE FROM clusters WHERE session_id = $1", session_id
             )
-            await conn.execute(
-                "DELETE FROM reasoning_logs WHERE session_id = $1", session_id
-            )
+            # Keep reasoning_logs — the model needs its conversation history
+            # to recognize when a student corrects a mistake it pointed out
             clear_session_usage(session_id)
-            clear_reasoning_usage(session_id)
         else:
             result = await conn.execute("DELETE FROM stroke_logs")
             await conn.execute("DELETE FROM clusters")
-            await conn.execute("DELETE FROM reasoning_logs")
+            # Keep reasoning_logs for conversation continuity
 
     count = int(result.split()[-1])
     return {"deleted": count}
@@ -443,13 +441,8 @@ async def strokes_websocket(ws: WebSocket, session_id: str = "", user_id: str = 
                             session_id,
                             page,
                         )
-                        await conn.execute(
-                            "DELETE FROM reasoning_logs WHERE session_id = $1 AND page = $2",
-                            session_id,
-                            page,
-                        )
+                        # Keep reasoning_logs — model needs conversation history
                 clear_session_usage(session_id)
-                clear_reasoning_usage(session_id)
                 await ws.send_text(json.dumps({"type": "ack"}))
                 continue
 
