@@ -1,8 +1,9 @@
 """Mathpix handwriting transcription at the page level.
 
-Each transcription call creates a fresh Mathpix session and sends ALL visible
-strokes. Erase/clear events invalidate (cancel pending debounce) so the next
-draw triggers a clean re-transcription.
+Each transcription call sends ALL visible strokes (no incremental tracking).
+Sessions are reused within their TTL for billing efficiency (Mathpix charges
+per session, not per call). Erase/clear events invalidate the session so a
+fresh one is created on the next draw.
 
 Requires MATHPIX_APP_ID and MATHPIX_APP_KEY env vars. If missing,
 transcription is silently skipped.
@@ -12,6 +13,7 @@ import asyncio
 import json
 import os
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -25,7 +27,11 @@ DEBOUNCE_SECONDS = 1.5
 class MathpixSession:
     strokes_session_id: str
     app_token: str
+    expires_at: datetime
 
+
+# (session_id, page) → MathpixSession
+_sessions: dict[tuple[str, int], MathpixSession] = {}
 
 # (session_id, page) → pending debounce asyncio.Task
 _debounce_tasks: dict[tuple[str, int], asyncio.Task] = {}
@@ -57,11 +63,25 @@ async def create_session() -> MathpixSession:
     return MathpixSession(
         strokes_session_id=data["strokes_session_id"],
         app_token=data["app_token"],
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=4, seconds=30),
     )
+
+
+async def get_or_create_session(
+    session_id: str, page: int
+) -> MathpixSession:
+    key = (session_id, page)
+    existing = _sessions.get(key)
+    if existing and datetime.now(timezone.utc) < existing.expires_at:
+        return existing
+    session = await create_session()
+    _sessions[key] = session
+    return session
 
 
 def invalidate_session(session_id: str, page: int) -> None:
     key = (session_id, page)
+    _sessions.pop(key, None)
     task = _debounce_tasks.pop(key, None)
     if task:
         task.cancel()
@@ -69,13 +89,14 @@ def invalidate_session(session_id: str, page: int) -> None:
 
 
 def cleanup_sessions(session_id: str) -> None:
-    keys_to_remove = [k for k in _debounce_tasks if k[0] == session_id]
+    keys_to_remove = [k for k in _sessions if k[0] == session_id]
     for key in keys_to_remove:
+        _sessions.pop(key, None)
         task = _debounce_tasks.pop(key, None)
         if task:
             task.cancel()
     if keys_to_remove:
-        print(f"[mathpix] cleaned up {len(keys_to_remove)} debounce task(s) for {session_id}")
+        print(f"[mathpix] cleaned up {len(keys_to_remove)} session(s) for {session_id}")
 
 
 def reef_strokes_to_mathpix(strokes: list[dict]) -> dict:
@@ -180,8 +201,8 @@ async def _do_transcription(session_id: str, page: int) -> None:
         if not all_strokes:
             return
 
-        # Fresh session each call — no incremental tracking
-        session = await create_session()
+        # Reuse session within TTL (billing), but always send ALL strokes
+        session = await get_or_create_session(session_id, page)
         result = await send_strokes(session, all_strokes)
 
         latex = result.get("latex_styled", "") or result.get("text", "")
