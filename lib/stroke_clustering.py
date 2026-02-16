@@ -1,15 +1,15 @@
-"""Y-centroid gap stroke clustering.
+"""DBSCAN stroke clustering with bounding-box gap distance.
 
-Strokes are sorted by centroid_y, then split into clusters wherever the
-gap between consecutive centroid_y values exceeds a threshold.  This
-correctly handles tall symbols (integrals, brackets) whose bounding boxes
-span multiple lines but whose centroids remain on the correct line.
+Uses bounding-box gap distance: two strokes are "close" if their
+bounding boxes overlap or are within `eps` pixels of each other.
+Y-axis is weighted 3x to prefer horizontal grouping (same line).
 """
 
 import json
 from dataclasses import dataclass
 
 import numpy as np
+from sklearn.cluster import DBSCAN
 
 from lib.database import get_pool
 from lib.models.clustering import ClusterInfo, ClusterResponse
@@ -58,249 +58,80 @@ def extract_stroke_entries(rows: list[dict]) -> list[StrokeEntry]:
     return entries
 
 
-def cluster_by_centroid_gap(
-    entries: list[StrokeEntry],
-) -> tuple[np.ndarray, np.ndarray, list[ClusterInfo]]:
-    """Cluster strokes by gaps between sorted centroid_y values.
+def bbox_gap_distance(entries: list[StrokeEntry]) -> np.ndarray:
+    """Compute pairwise bounding-box gap distance matrix.
 
-    1. Sort strokes by centroid_y.
-    2. Compute consecutive gaps.
-    3. Find threshold via natural-breaks: sort gaps, find the biggest
-       ratio between consecutive non-zero sorted gaps where the upper
-       value ≥ 5px. If ratio ≥ 1.5, use the midpoint as threshold.
-       Otherwise fall back to median_gap × 4 (floor 20).
-    4. Any gap > threshold starts a new cluster.
-    5. Labels assigned top-to-bottom (cluster 0 = topmost line).
+    Distance = 0 if bboxes overlap, otherwise Euclidean edge-to-edge gap.
+    Y-axis weighted 3x to prefer horizontal grouping (same line).
+    """
+    n = len(entries)
+    dist = np.zeros((n, n))
+    for i in range(n):
+        a = entries[i]
+        for j in range(i + 1, n):
+            b = entries[j]
+            gap_x = max(0, max(a.min_x, b.min_x) - min(a.max_x, b.max_x))
+            gap_y = max(0, max(a.min_y, b.min_y) - min(a.max_y, b.max_y))
+            d = (gap_x ** 2 + (gap_y * 3) ** 2) ** 0.5
+            dist[i, j] = d
+            dist[j, i] = d
+    return dist
+
+
+def run_dbscan(
+    entries: list[StrokeEntry],
+    eps: float = 20.0,
+    min_samples: int = 1,
+) -> tuple[np.ndarray, np.ndarray, list[ClusterInfo]]:
+    """Run DBSCAN using bounding-box gap distance.
+
+    Noise strokes (label -1) are assigned to the nearest non-noise cluster
+    by centroid distance. If ALL strokes are noise, they form a single cluster.
     """
     if not entries:
         return np.array([]).reshape(0, 2), np.array([], dtype=int), []
 
     centroids = np.array([[e.centroid_x, e.centroid_y] for e in entries])
+    dist_matrix = bbox_gap_distance(entries)
+    labels = DBSCAN(eps=eps, min_samples=min_samples, metric="precomputed").fit_predict(dist_matrix)
 
-    # Sort by centroid_y
-    order = np.argsort(centroids[:, 1])
-    sorted_cy = centroids[order, 1]
+    # Handle noise: assign -1 strokes to nearest non-noise cluster
+    non_noise_mask = labels != -1
+    if not non_noise_mask.any():
+        # All noise — treat as single cluster
+        labels[:] = 0
+    elif (~non_noise_mask).any():
+        # Some noise — assign each to nearest non-noise cluster by centroid
+        non_noise_centroids = centroids[non_noise_mask]
+        non_noise_labels = labels[non_noise_mask]
+        for i in np.where(~non_noise_mask)[0]:
+            dists = np.linalg.norm(non_noise_centroids - centroids[i], axis=1)
+            labels[i] = non_noise_labels[np.argmin(dists)]
 
-    # Compute gaps and threshold
-    gaps = np.diff(sorted_cy)
-    if len(gaps) < 8:
-        # Too few strokes for natural-breaks — use fixed threshold
-        threshold = 20.0
-    else:
-        # Natural-breaks: find the biggest ratio between consecutive
-        # non-zero sorted gaps, but only where the upper gap is >= 5px
-        # (sub-5px gaps can't be real line breaks). This avoids false
-        # splits from tiny within-line ratio noise (e.g. 0.5→1.0 = 2x).
-        sorted_gaps = np.sort(gaps)
-        nonzero = sorted_gaps[sorted_gaps > 0]
-
-        best_ratio = 0.0
-        best_ratio_idx = -1
-        if len(nonzero) >= 2:
-            ratios = nonzero[1:] / nonzero[:-1]
-            for i in range(len(ratios)):
-                if nonzero[i + 1] >= 5 and ratios[i] > best_ratio:
-                    best_ratio = float(ratios[i])
-                    best_ratio_idx = i
-
-        if best_ratio_idx >= 0 and best_ratio >= 1.5:
-            below = float(nonzero[best_ratio_idx])
-            above = float(nonzero[best_ratio_idx + 1])
-            threshold = (below + above) / 2
-        else:
-            threshold = max(float(np.median(gaps)) * 4, 20.0)
-
-    # Assign cluster labels top-to-bottom
-    labels = np.zeros(len(entries), dtype=int)
-    current_label = 0
-    for rank in range(len(order)):
-        if rank > 0 and gaps[rank - 1] > threshold:
-            current_label += 1
-        labels[order[rank]] = current_label
-
-    # Merge clusters with overlapping y-bounding boxes (e.g. crossing marks
-    # on "2"s create strokes at slightly different y, splitting one line into
-    # multiple clusters).  If two clusters overlap vertically by more than 50%
-    # of the smaller one's height, they belong to the same line.
-    merge_map: dict[int, int] = {}  # old_label → canonical_label
-    for lbl in range(current_label + 1):
-        merge_map[lbl] = lbl
-
-    def _find(lbl: int) -> int:
-        while merge_map[lbl] != lbl:
-            lbl = merge_map[lbl]
-        return lbl
-
-    # Collect per-cluster y-ranges
-    cluster_y_ranges: dict[int, tuple[float, float]] = {}
-    for lbl in range(current_label + 1):
-        mask = labels == lbl
-        member_entries = [entries[i] for i in np.where(mask)[0]]
-        if member_entries:
-            cluster_y_ranges[lbl] = (
-                min(e.min_y for e in member_entries),
-                max(e.max_y for e in member_entries),
-            )
-
-    for a in range(current_label + 1):
-        for b in range(a + 1, current_label + 1):
-            if _find(a) == _find(b):
-                continue
-            if a not in cluster_y_ranges or b not in cluster_y_ranges:
-                continue
-            a_min, a_max = cluster_y_ranges[a]
-            b_min, b_max = cluster_y_ranges[b]
-            overlap = max(0, min(a_max, b_max) - max(a_min, b_min))
-            smaller_height = min(a_max - a_min, b_max - b_min) or 1
-            if overlap / smaller_height > 0.5:
-                merge_map[_find(b)] = _find(a)
-
-    # Relabel after y-overlap merging
-    canonical_set = sorted(set(_find(l) for l in range(current_label + 1)))
-    relabel = {old: new for new, old in enumerate(canonical_set)}
+    # Relabel to consecutive 0..N-1
+    unique_labels = sorted(set(labels))
+    relabel = {old: new for new, old in enumerate(unique_labels)}
     for i in range(len(labels)):
-        labels[i] = relabel[_find(int(labels[i]))]
-
-    # Diagram-merge pass: merge vertically adjacent clusters that form a
-    # square-ish combined shape (diagrams, not text lines).
-    num_after_overlap = len(canonical_set)
-    diag_merge: dict[int, int] = {l: l for l in range(num_after_overlap)}
-
-    def _dfind(lbl: int) -> int:
-        while diag_merge[lbl] != lbl:
-            lbl = diag_merge[lbl]
-        return lbl
-
-    # Compute per-cluster bounding boxes
-    cluster_bboxes: dict[int, tuple[float, float, float, float]] = {}
-    for lbl in range(num_after_overlap):
-        mask = labels == lbl
-        members = [entries[i] for i in np.where(mask)[0]]
-        if members:
-            cluster_bboxes[lbl] = (
-                min(e.min_x for e in members),
-                min(e.min_y for e in members),
-                max(e.max_x for e in members),
-                max(e.max_y for e in members),
-            )
-
-    # Sort clusters by min_y for pairwise checking
-    sorted_labels = sorted(cluster_bboxes.keys(), key=lambda l: cluster_bboxes[l][1])
-    for i in range(len(sorted_labels)):
-        for j in range(i + 1, len(sorted_labels)):
-            a, b = sorted_labels[i], sorted_labels[j]
-            if _dfind(a) == _dfind(b):
-                continue
-            ax1, ay1, ax2, ay2 = cluster_bboxes[a]
-            bx1, by1, bx2, by2 = cluster_bboxes[b]
-
-            # Check x-overlap > 30%
-            x_overlap = max(0, min(ax2, bx2) - max(ax1, bx1))
-            smaller_width = min(ax2 - ax1, bx2 - bx1) or 1
-            if x_overlap / smaller_width < 0.3:
-                continue
-
-            # Skip if either cluster is text-like (wide relative to tall)
-            a_ar = (ax2 - ax1) / max(ay2 - ay1, 1)
-            b_ar = (bx2 - bx1) / max(by2 - by1, 1)
-            if a_ar >= 2.5 or b_ar >= 2.5:
-                continue
-
-            # Check combined aspect ratio
-            cx1 = min(ax1, bx1)
-            cy1 = min(ay1, by1)
-            cx2 = max(ax2, bx2)
-            cy2 = max(ay2, by2)
-            combined_ar = (cx2 - cx1) / max(cy2 - cy1, 1)
-            if combined_ar < 2.5:
-                diag_merge[_dfind(b)] = _dfind(a)
-
-    # Relabel after diagram merging
-    canonical_set = sorted(set(_dfind(l) for l in range(num_after_overlap)))
-    drelabel = {old: new for new, old in enumerate(canonical_set)}
-    for i in range(len(labels)):
-        labels[i] = drelabel[_dfind(int(labels[i]))]
-
-    # Intersection merge: merge any clusters whose bounding boxes intersect.
-    num_after_diag = len(canonical_set)
-    int_merge: dict[int, int] = {l: l for l in range(num_after_diag)}
-
-    def _ifind(lbl: int) -> int:
-        while int_merge[lbl] != lbl:
-            lbl = int_merge[lbl]
-        return lbl
-
-    # Recompute bounding boxes after previous merges
-    int_bboxes: dict[int, tuple[float, float, float, float]] = {}
-    for lbl in range(num_after_diag):
-        mask = labels == lbl
-        members = [entries[i] for i in np.where(mask)[0]]
-        if members:
-            int_bboxes[lbl] = (
-                min(e.min_x for e in members),
-                min(e.min_y for e in members),
-                max(e.max_x for e in members),
-                max(e.max_y for e in members),
-            )
-
-    # Iteratively merge until no more intersections (transitive closure)
-    changed = True
-    while changed:
-        changed = False
-        # Recompute canonical bboxes after merges
-        canon_bboxes: dict[int, tuple[float, float, float, float]] = {}
-        for lbl in range(num_after_diag):
-            c = _ifind(lbl)
-            if c not in canon_bboxes and lbl in int_bboxes:
-                canon_bboxes[c] = int_bboxes[lbl]
-            elif lbl in int_bboxes and c in canon_bboxes:
-                cb = canon_bboxes[c]
-                ib = int_bboxes[lbl]
-                canon_bboxes[c] = (
-                    min(cb[0], ib[0]), min(cb[1], ib[1]),
-                    max(cb[2], ib[2]), max(cb[3], ib[3]),
-                )
-
-        canons = sorted(canon_bboxes.keys())
-        for i in range(len(canons)):
-            for j in range(i + 1, len(canons)):
-                a, b = canons[i], canons[j]
-                if _ifind(a) == _ifind(b):
-                    continue
-                ax1, ay1, ax2, ay2 = canon_bboxes[a]
-                bx1, by1, bx2, by2 = canon_bboxes[b]
-                # Two rectangles intersect if they overlap in both x and y
-                if ax1 < bx2 and bx1 < ax2 and ay1 < by2 and by1 < ay2:
-                    int_merge[_ifind(b)] = _ifind(a)
-                    changed = True
-
-    # Relabel after intersection merging
-    canonical_set = sorted(set(_ifind(l) for l in range(num_after_diag)))
-    irelabel = {old: new for new, old in enumerate(canonical_set)}
-    for i in range(len(labels)):
-        labels[i] = irelabel[_ifind(int(labels[i]))]
+        labels[i] = relabel[labels[i]]
 
     # Build ClusterInfo list
-    num_clusters = len(canonical_set)
     cluster_infos: list[ClusterInfo] = []
-
-    for label in range(num_clusters):
+    for label in sorted(set(labels)):
         mask = labels == label
-        member_indices = np.where(mask)[0]
-        member_entries = [entries[i] for i in member_indices]
-        member_centroids = centroids[member_indices]
+        cluster_entries = [entries[i] for i in np.where(mask)[0]]
+        cluster_centroids = centroids[mask]
         cluster_infos.append(ClusterInfo(
-            cluster_label=label,
-            stroke_count=len(member_entries),
+            cluster_label=int(label),
+            stroke_count=int(mask.sum()),
             centroid=[
-                float(member_centroids[:, 0].mean()),
-                float(member_centroids[:, 1].mean()),
+                float(cluster_centroids[:, 0].mean()),
+                float(cluster_centroids[:, 1].mean()),
             ],
             bounding_box=[
-                float(min(e.min_x for e in member_entries)),
-                float(min(e.min_y for e in member_entries)),
-                float(max(e.max_x for e in member_entries)),
-                float(max(e.max_y for e in member_entries)),
+                float(min(e.min_x for e in cluster_entries)),
+                float(min(e.min_y for e in cluster_entries)),
+                float(max(e.max_x for e in cluster_entries)),
+                float(max(e.max_y for e in cluster_entries)),
             ],
         ))
 
@@ -417,8 +248,8 @@ async def update_cluster_labels(session_id: str, page: int) -> list[int]:
                 old_signatures.setdefault(lbl, set()).add((log_id, idx))
 
     # ── Re-cluster ───────────────────────────────────────────
-    _, labels, cluster_infos = cluster_by_centroid_gap(entries)
-    print(f"[cluster] centroid-gap → {len(cluster_infos)} clusters, labels={[int(l) for l in labels]}")
+    _, labels, cluster_infos = run_dbscan(entries)
+    print(f"[cluster] eps=20 bbox-gap → {len(cluster_infos)} clusters, labels={[int(l) for l in labels]}")
 
     # Build new stroke signatures
     new_signatures: dict[int, set[tuple[int, int]]] = {}
@@ -516,7 +347,7 @@ async def cluster_strokes(session_id: str, page: int) -> ClusterResponse:
             num_strokes=0, num_clusters=0, noise_strokes=0, clusters=[],
         )
 
-    centroids, labels, cluster_infos = cluster_by_centroid_gap(entries)
+    centroids, labels, cluster_infos = run_dbscan(entries)
 
     # Store results to database
     async with pool.acquire() as conn:
