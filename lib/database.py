@@ -157,6 +157,22 @@ async def init_db():
             ON reasoning_logs(session_id, created_at DESC)
         """)
         await conn.execute("""
+            CREATE TABLE IF NOT EXISTS page_transcriptions (
+                id SERIAL PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                page INT NOT NULL,
+                latex TEXT NOT NULL DEFAULT '',
+                text TEXT NOT NULL DEFAULT '',
+                confidence FLOAT NOT NULL DEFAULT 0,
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE(session_id, page)
+            )
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_page_transcriptions_session_page
+            ON page_transcriptions(session_id, page)
+        """)
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS session_question_cache (
                 session_id TEXT PRIMARY KEY,
                 question_id INT NOT NULL,
