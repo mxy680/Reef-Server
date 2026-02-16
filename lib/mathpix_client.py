@@ -151,15 +151,15 @@ async def _do_transcription(session_id: str, page: int) -> None:
                 session_id, page,
             )
 
-        # Resolve erases: erase resets visible set
+        # Resolve erases: erase event contains remaining visible strokes
         visible: list[dict] = []
         for row in rows:
+            strokes_data = row["strokes"]
+            if isinstance(strokes_data, str):
+                strokes_data = json.loads(strokes_data)
             if row["event_type"] == "erase":
-                visible = []
+                visible = [s for s in strokes_data if s.get("points")]
             else:
-                strokes_data = row["strokes"]
-                if isinstance(strokes_data, str):
-                    strokes_data = json.loads(strokes_data)
                 for s in strokes_data:
                     if s.get("points"):
                         visible.append(s)
