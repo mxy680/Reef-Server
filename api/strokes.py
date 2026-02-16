@@ -16,8 +16,8 @@ from pydantic import BaseModel
 from lib.database import get_pool
 from lib.mathpix_client import (
     cleanup_sessions,
+    get_or_create_session,
     invalidate_session,
-    schedule_transcription,
 )
 from lib.stroke_clustering import update_cluster_labels
 
@@ -122,7 +122,7 @@ async def strokes_post(req: StrokesRequest):
     if req.event_type == "erase":
         invalidate_session(req.session_id, req.page)
     elif req.event_type == "draw":
-        schedule_transcription(req.session_id, req.page)
+        await get_or_create_session(req.session_id, req.page)
 
     # Update last_seen
     if req.session_id in _active_sessions:
