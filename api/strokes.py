@@ -5,7 +5,6 @@ iOS sends debounced stroke data via POST; server logs
 each batch to the stroke_logs table in Postgres.
 """
 
-import asyncio
 import json
 from datetime import datetime, timezone
 from typing import Optional
@@ -18,9 +17,8 @@ from lib.mathpix_client import (
     cleanup_sessions,
     get_session_info,
     invalidate_session,
-    schedule_transcription,
+    schedule_cluster_and_transcribe,
 )
-from lib.stroke_clustering import update_cluster_labels
 
 router = APIRouter()
 
@@ -117,11 +115,9 @@ async def strokes_post(req: StrokesRequest):
             req.user_id,
         )
 
-    # Re-cluster in background
-    asyncio.create_task(update_cluster_labels(req.session_id, req.page))
-
+    # Re-cluster + per-cluster transcription (debounced)
     if req.event_type in ("draw", "erase"):
-        schedule_transcription(req.session_id, req.page)
+        schedule_cluster_and_transcribe(req.session_id, req.page)
 
     # Update last_seen
     if req.session_id in _active_sessions:
@@ -206,19 +202,21 @@ async def get_stroke_logs(
             limit,
         )
 
-    # Fetch cluster order (sorted by centroid_y for reading order)
+    # Fetch cluster order (sorted by centroid_y for reading order) and content types
     cluster_order: list[int] = []
+    cluster_types: dict[int, str] = {}
     if session_id:
         async with pool.acquire() as conn:
             cluster_rows = await conn.fetch(
                 """
-                SELECT cluster_label, centroid_y FROM clusters
+                SELECT cluster_label, centroid_y, content_type FROM clusters
                 WHERE session_id = $1
                 ORDER BY centroid_y ASC
                 """,
                 session_id,
             )
         cluster_order = [r["cluster_label"] for r in cluster_rows]
+        cluster_types = {r["cluster_label"]: r["content_type"] or "math" for r in cluster_rows}
 
     # Look up document_name and matched question label from active session
     active_doc_name = ""
@@ -267,6 +265,7 @@ async def get_stroke_logs(
             key=lambda sid: _active_sessions[sid].get("last_seen", ""),
         ),
         "cluster_order": cluster_order,
+        "cluster_types": cluster_types,
         "document_name": active_doc_name,
         "matched_question_label": matched_question_label,
         "mathpix_session": get_session_info(session_id, page or 1) if session_id else None,

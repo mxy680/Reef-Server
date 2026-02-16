@@ -307,11 +307,14 @@ def cluster_by_centroid_gap(
     return centroids, labels, cluster_infos
 
 
-async def update_cluster_labels(session_id: str, page: int):
-    """Re-cluster all visible strokes for a session+page and update cluster_labels column."""
+async def update_cluster_labels(session_id: str, page: int) -> list[int]:
+    """Re-cluster all visible strokes for a session+page and update cluster_labels column.
+
+    Returns list of "dirty" cluster labels that need re-transcription (new or changed clusters).
+    """
     pool = get_pool()
     if not pool:
-        return
+        return []
 
     async with pool.acquire() as conn:
         # Fetch all draw and erase events in chronological order so we can
@@ -333,7 +336,7 @@ async def update_cluster_labels(session_id: str, page: int):
                 "DELETE FROM clusters WHERE session_id = $1 AND page = $2",
                 session_id, page,
             )
-        return
+        return []
 
     # Resolve visible rows: erase events reset the canvas
     visible_rows: list[dict] = []
@@ -349,7 +352,7 @@ async def update_cluster_labels(session_id: str, page: int):
                 "DELETE FROM clusters WHERE session_id = $1 AND page = $2",
                 session_id, page,
             )
-        return
+        return []
 
     entries = extract_stroke_entries(visible_rows)
     if not entries:
@@ -359,13 +362,88 @@ async def update_cluster_labels(session_id: str, page: int):
                 "DELETE FROM clusters WHERE session_id = $1 AND page = $2",
                 session_id, page,
             )
-        return
+        return []
 
     for e in entries:
         print(f"[cluster] stroke log={e.log_id} idx={e.index} bbox=({e.min_x:.0f},{e.min_y:.0f})-({e.max_x:.0f},{e.max_y:.0f})")
 
+    # ── Read old cluster state before re-clustering ──────────
+    async with pool.acquire() as conn:
+        old_cluster_rows = await conn.fetch(
+            """
+            SELECT cluster_label, transcription, content_type, stroke_count
+            FROM clusters
+            WHERE session_id = $1 AND page = $2
+            """,
+            session_id, page,
+        )
+        old_log_rows = await conn.fetch(
+            """
+            SELECT id, cluster_labels
+            FROM stroke_logs
+            WHERE session_id = $1 AND page = $2 AND event_type IN ('draw', 'erase')
+            ORDER BY received_at
+            """,
+            session_id, page,
+        )
+
+    # Build old stroke signatures: cluster_label → set of (log_id, stroke_index)
+    old_signatures: dict[int, set[tuple[int, int]]] = {}
+    old_transcriptions: dict[int, str] = {}
+    old_content_types: dict[int, str] = {}
+    for cr in old_cluster_rows:
+        lbl = cr["cluster_label"]
+        old_transcriptions[lbl] = cr["transcription"] or ""
+        old_content_types[lbl] = cr["content_type"] or "math"
+        old_signatures[lbl] = set()
+
+    # Resolve visible log rows for old labels (same erase logic)
+    old_visible: list[dict] = []
+    for row in old_log_rows:
+        # We don't have event_type in this query, but the rows are from the
+        # same set we already resolved above. Re-derive from all_rows order.
+        pass
+    # Use visible_rows we already resolved — build old signatures from their cluster_labels
+    for row in visible_rows:
+        log_id = row["id"]
+        labels_json = row.get("cluster_labels")
+        if not labels_json:
+            continue
+        old_labels = labels_json if isinstance(labels_json, list) else json.loads(labels_json)
+        strokes_data = row["strokes"]
+        strokes = strokes_data if isinstance(strokes_data, list) else json.loads(strokes_data)
+        for idx, lbl in enumerate(old_labels):
+            if idx < len(strokes) and strokes[idx].get("points"):
+                old_signatures.setdefault(lbl, set()).add((log_id, idx))
+
+    # ── Re-cluster ───────────────────────────────────────────
     _, labels, cluster_infos = cluster_by_centroid_gap(entries)
     print(f"[cluster] centroid-gap → {len(cluster_infos)} clusters, labels={[int(l) for l in labels]}")
+
+    # Build new stroke signatures
+    new_signatures: dict[int, set[tuple[int, int]]] = {}
+    for i, entry in enumerate(entries):
+        lbl = int(labels[i])
+        new_signatures.setdefault(lbl, set()).add((entry.log_id, entry.index))
+
+    # Match: find unchanged clusters (same signature) and dirty ones
+    dirty_labels: list[int] = []
+    carried_transcriptions: dict[int, str] = {}
+    carried_content_types: dict[int, str] = {}
+
+    for new_lbl, new_sig in new_signatures.items():
+        matched = False
+        for old_lbl, old_sig in old_signatures.items():
+            if new_sig == old_sig:
+                # Unchanged — carry over transcription and content_type
+                carried_transcriptions[new_lbl] = old_transcriptions.get(old_lbl, "")
+                carried_content_types[new_lbl] = old_content_types.get(old_lbl, "math")
+                matched = True
+                print(f"[cluster] cluster {new_lbl}: unchanged (was {old_lbl})")
+                break
+        if not matched:
+            dirty_labels.append(new_lbl)
+            print(f"[cluster] cluster {new_lbl}: dirty (needs transcription)")
 
     # Group labels by log_id
     labels_by_log: dict[int, list[int]] = {}
@@ -378,44 +456,34 @@ async def update_cluster_labels(session_id: str, page: int):
             [(json.dumps(lbls), log_id) for log_id, lbls in labels_by_log.items()],
         )
 
-    # Delete stale cluster rows, then upsert current clusters
-    current_labels = [info.cluster_label for info in cluster_infos]
+    # Delete all old cluster rows, insert fresh ones
     async with pool.acquire() as conn:
-        if current_labels:
-            await conn.execute(
-                """
-                DELETE FROM clusters
-                WHERE session_id = $1 AND page = $2
-                  AND cluster_label != ALL($3::int[])
-                """,
-                session_id, page, current_labels,
-            )
-        else:
-            await conn.execute(
-                "DELETE FROM clusters WHERE session_id = $1 AND page = $2",
-                session_id, page,
-            )
+        await conn.execute(
+            "DELETE FROM clusters WHERE session_id = $1 AND page = $2",
+            session_id, page,
+        )
 
     for info in cluster_infos:
+        lbl = info.cluster_label
+        tx = carried_transcriptions.get(lbl, "")
+        ct = carried_content_types.get(lbl, "math")
         async with pool.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO clusters (session_id, page, cluster_label, stroke_count,
                                       centroid_x, centroid_y, bbox_x1, bbox_y1, bbox_x2, bbox_y2,
                                       transcription, content_type)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, '', 'math')
-                ON CONFLICT (session_id, page, cluster_label) DO UPDATE SET
-                    stroke_count = EXCLUDED.stroke_count,
-                    centroid_x = EXCLUDED.centroid_x, centroid_y = EXCLUDED.centroid_y,
-                    bbox_x1 = EXCLUDED.bbox_x1, bbox_y1 = EXCLUDED.bbox_y1,
-                    bbox_x2 = EXCLUDED.bbox_x2, bbox_y2 = EXCLUDED.bbox_y2
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                 """,
                 session_id, page,
                 info.cluster_label, info.stroke_count,
                 info.centroid[0], info.centroid[1],
                 info.bounding_box[0], info.bounding_box[1],
                 info.bounding_box[2], info.bounding_box[3],
+                tx, ct,
             )
+
+    return dirty_labels
 
 
 async def cluster_strokes(session_id: str, page: int) -> ClusterResponse:
