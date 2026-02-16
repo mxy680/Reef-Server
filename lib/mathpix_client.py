@@ -239,9 +239,7 @@ async def _do_cluster_transcription(
         first_line = raw_line_data[0]
         line_type = first_line.get("type", "")
         subtype = first_line.get("subtype", "")
-        if line_type == "text":
-            content_type = "text"
-        elif line_type == "diagram" and subtype.startswith("chemistry"):
+        if line_type == "diagram" and subtype.startswith("chemistry"):
             content_type = "chemistry"
         elif line_type == "diagram":
             content_type = "other"
