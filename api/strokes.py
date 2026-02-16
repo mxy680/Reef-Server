@@ -205,11 +205,14 @@ async def get_stroke_logs(
     # Fetch cluster order (sorted by centroid_y for reading order) and content types
     cluster_order: list[int] = []
     cluster_types: dict[int, str] = {}
+    cluster_boxes: dict[int, list[float]] = {}
     if session_id:
         async with pool.acquire() as conn:
             cluster_rows = await conn.fetch(
                 """
-                SELECT cluster_label, centroid_y, content_type FROM clusters
+                SELECT cluster_label, centroid_y, content_type,
+                       bbox_x1, bbox_y1, bbox_x2, bbox_y2
+                FROM clusters
                 WHERE session_id = $1
                 ORDER BY centroid_y ASC
                 """,
@@ -217,6 +220,10 @@ async def get_stroke_logs(
             )
         cluster_order = [r["cluster_label"] for r in cluster_rows]
         cluster_types = {r["cluster_label"]: r["content_type"] or "math" for r in cluster_rows}
+        cluster_boxes = {
+            r["cluster_label"]: [r["bbox_x1"], r["bbox_y1"], r["bbox_x2"], r["bbox_y2"]]
+            for r in cluster_rows
+        }
 
     # Look up document_name and matched question label from active session
     active_doc_name = ""
@@ -266,6 +273,7 @@ async def get_stroke_logs(
         ),
         "cluster_order": cluster_order,
         "cluster_types": cluster_types,
+        "cluster_boxes": cluster_boxes,
         "document_name": active_doc_name,
         "matched_question_label": matched_question_label,
         "mathpix_session": get_session_info(session_id, page or 1) if session_id else None,
