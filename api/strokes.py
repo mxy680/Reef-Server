@@ -17,6 +17,7 @@ from lib.database import get_pool
 from lib.mathpix_client import (
     cleanup_sessions,
     get_or_create_session,
+    get_session_expiry,
     invalidate_session,
 )
 from lib.stroke_clustering import update_cluster_labels
@@ -270,6 +271,7 @@ async def get_stroke_logs(
         "cluster_order": cluster_order,
         "document_name": active_doc_name,
         "matched_question_label": matched_question_label,
+        "mathpix_session_expires_at": get_session_expiry(session_id, page or 1) if session_id else None,
     }
 
 

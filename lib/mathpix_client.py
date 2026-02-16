@@ -76,6 +76,15 @@ def invalidate_session(session_id: str, page: int) -> None:
         print(f"[mathpix] invalidated session ({session_id}, page={page})")
 
 
+def get_session_expiry(session_id: str, page: int) -> str | None:
+    """Return ISO timestamp of session expiry, or None if no session."""
+    key = (session_id, page)
+    session = _sessions.get(key)
+    if session and datetime.now(timezone.utc) < session.expires_at:
+        return session.expires_at.isoformat()
+    return None
+
+
 def cleanup_sessions(session_id: str) -> None:
     keys_to_remove = [k for k in _sessions if k[0] == session_id]
     for key in keys_to_remove:
