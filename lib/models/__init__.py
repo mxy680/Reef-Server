@@ -3,7 +3,6 @@
 from .embed import EmbedRequest, EmbedResponse
 from .group_problems import ProblemGroup, GroupProblemsResponse
 from .question import Part, Question, QuestionBatch
-from .region import PartRegion
 from .quiz import QuizGenerationRequest, QuizQuestionResponse
 from .user import UserProfileRequest, UserProfileResponse
 from .clustering import ClusterRequest, ClusterInfo, ClusterResponse
@@ -14,7 +13,6 @@ __all__ = [
     "ProblemGroup",
     "GroupProblemsResponse",
     "Part",
-    "PartRegion",
     "Question",
     "QuestionBatch",
     "QuizGenerationRequest",
